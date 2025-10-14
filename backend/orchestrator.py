@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from compositor import render_project
+from storage import (
+    fetch_job_metadata,
+    fetch_project_index,
+    persist_job_metadata,
+    persist_project_index,
+    upload_render_output,
+)
 from tts import ensure_tts_audio
 
 
@@ -58,15 +65,22 @@ class RenderOrchestrator:
             return job
 
         job_path = self._job_path(job_id)
+        job = None
         if job_path.exists():
             try:
                 job = json.loads(job_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
-                return None
-            if not isinstance(job, dict):
-                return None
+                job = None
+        if not job:
+            job = fetch_job_metadata(job_id)
+        if job and isinstance(job, dict):
             with self.lock:
                 self.jobs[job_id] = job
+                project_id = job.get("projectId")
+                if project_id:
+                    self.project_jobs[str(project_id)] = job_id
+                    self._persist_index_locked()
+            self._persist_job(job, sync_remote=False)
             return job
         return None
 
@@ -106,7 +120,11 @@ class RenderOrchestrator:
                 cache_dir=cache_dir,
             )
 
-            relative_url = f"/videos/{project_id}/{final_path.name}?v={uuid.uuid4().hex[:6]}"
+            uploaded_url = upload_render_output(final_path, project_id)
+            if uploaded_url:
+                relative_url = uploaded_url
+            else:
+                relative_url = f"/videos/{project_id}/{final_path.name}?v={uuid.uuid4().hex[:6]}"
             self._update(
                 job_id,
                 status="completed",
@@ -137,27 +155,33 @@ class RenderOrchestrator:
                 self._persist_index_locked()
             self._persist_job(job)
 
-    def _persist_job(self, job: Dict) -> None:
+    def _persist_job(self, job: Dict, sync_remote: bool = True) -> None:
         job_path = self._job_path(job["id"])
         job_path.parent.mkdir(parents=True, exist_ok=True)
         job_path.write_text(json.dumps(job), encoding="utf-8")
+        if sync_remote:
+            persist_job_metadata(job)
 
     def _job_path(self, job_id: str) -> Path:
         return self.render_dir / f"{job_id}.json"
 
     def _load_index(self) -> Dict[str, str]:
+        mapping: Dict[str, str] = {}
         if self.project_index_path.exists():
             try:
                 data = json.loads(self.project_index_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
-                    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+                    mapping.update({str(k): str(v) for k, v in data.items() if isinstance(v, str)})
             except json.JSONDecodeError:
-                return {}
-        return {}
+                pass
+        remote_index = fetch_project_index()
+        mapping.update(remote_index)
+        return mapping
 
     def _persist_index_locked(self) -> None:
         self.project_index_path.parent.mkdir(parents=True, exist_ok=True)
         self.project_index_path.write_text(json.dumps(self.project_jobs), encoding="utf-8")
+        persist_project_index(self.project_jobs)
 
     def get_by_project(self, project_id: str) -> Optional[Dict]:
         if not project_id:
@@ -184,6 +208,16 @@ class RenderOrchestrator:
                     self.jobs[job_data["id"]] = job_data
                     self.project_jobs[project_id] = job_data["id"]
                     self._persist_index_locked()
+                return job_data
+        remote_job_id = self.project_jobs.get(project_id)
+        if remote_job_id:
+            job_data = fetch_job_metadata(remote_job_id)
+            if job_data:
+                with self.lock:
+                    self.jobs[job_data["id"]] = job_data
+                    self.project_jobs[project_id] = job_data["id"]
+                    self._persist_index_locked()
+                self._persist_job(job_data, sync_remote=False)
                 return job_data
         return None
 
