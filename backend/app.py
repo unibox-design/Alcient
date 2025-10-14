@@ -1,4 +1,5 @@
 # backend/app.py
+import logging
 import os
 import re
 import uuid
@@ -78,6 +79,7 @@ def _split_narration_into_chunks(narration: str, count: int):
 load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+app.logger.setLevel(logging.INFO)
 # File uploads land in backend/outputs/uploads for easy cleanup.
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "outputs", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
@@ -413,13 +415,35 @@ def api_project_render_status(job_id):
     orchestrator = get_orchestrator(OUTPUT_BASE)
     project_hint = request.args.get("projectId")
 
+    app.logger.info(
+        "render_status_request job=%s projectHint=%s", job_id, project_hint
+    )
+
     job = orchestrator.get(job_id)
+    if job:
+        app.logger.info("render_status_hit via job_id status=%s", job.get("status"))
     if not job and project_hint:
+        app.logger.info("render_status_miss trying project_hint")
         job = orchestrator.get_by_project(project_hint)
+        if job:
+            app.logger.info(
+                "render_status_hit via project_hint job=%s status=%s",
+                job.get("id"),
+                job.get("status"),
+            )
     if not job:
+        app.logger.warning(
+            "render_status_not_found job=%s projectHint=%s", job_id, project_hint
+        )
         job = orchestrator.get_by_project(job_id)
     if not job:
         return jsonify({"error": "job not found"}), 404
+    app.logger.info(
+        "render_status_response job=%s status=%s videoUrl=%s",
+        job.get("id"),
+        job.get("status"),
+        job.get("videoUrl"),
+    )
     return jsonify(job)
 
 

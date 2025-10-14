@@ -109,6 +109,7 @@ export const fetchRenderStatus = createAsyncThunk(
 
       return await fetchRenderStatusApi(jobId, projectId);
     } catch (err) {
+      console.warn("fetchRenderStatus:error", { jobId, projectId, message: err.message, error: err });
       return rejectWithValue({ error: err.message || "Unable to fetch render status" });
     }
   }

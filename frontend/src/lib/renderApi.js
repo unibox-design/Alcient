@@ -37,7 +37,9 @@ export async function fetchRenderStatus(jobId, projectId) {
     const params = new URLSearchParams({ projectId });
     url = `${url}?${params.toString()}`;
   }
+  console.debug("fetchRenderStatus:request", { jobId, projectId, url });
   const data = await jsonRequest(url);
+  console.debug("fetchRenderStatus:response", { jobId, projectId, status: data.status, videoUrl: data.videoUrl });
   if (data.videoUrl) data.videoUrl = absoluteUrl(data.videoUrl);
   return data;
 }

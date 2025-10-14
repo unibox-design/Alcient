@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +36,7 @@ class RenderOrchestrator:
         self.jobs: Dict[str, Dict] = {}
         self.project_jobs: Dict[str, str] = self._load_index()
         self.lock = threading.Lock()
+        self.logger = logging.getLogger(__name__)
 
     def submit(self, project_payload: Dict) -> Dict:
         job_id = uuid.uuid4().hex
@@ -54,14 +56,22 @@ class RenderOrchestrator:
                 self._persist_index_locked()
             self._persist_job(job)
 
+        self.logger.info(
+            "render_submit job=%s project=%s sceneCount=%s",
+            job_id,
+            project_payload.get("id"),
+            len(project_payload.get("scenes") or []),
+        )
         future = self.executor.submit(self._run_render, job_id, project_payload)
         future.add_done_callback(lambda _f: None)
         return job
 
     def get(self, job_id: str) -> Optional[Dict]:
+        self.logger.debug("render_get job=%s", job_id)
         with self.lock:
             job = self.jobs.get(job_id)
         if job:
+            self.logger.debug("render_get hit_memory job=%s status=%s", job_id, job.get("status"))
             return job
 
         job_path = self._job_path(job_id)
@@ -81,7 +91,14 @@ class RenderOrchestrator:
                     self.project_jobs[str(project_id)] = job_id
                     self._persist_index_locked()
             self._persist_job(job, sync_remote=False)
+            self.logger.info(
+                "render_get restored job=%s project=%s status=%s",
+                job_id,
+                project_id,
+                job.get("status"),
+            )
             return job
+        self.logger.warning("render_get miss job=%s", job_id)
         return None
 
     # ------------------------------------------------------------------
@@ -94,6 +111,12 @@ class RenderOrchestrator:
             orientation = project_payload.get("format", "landscape")
             voice_model = project_payload.get("voiceModel")
             project_id = project_payload.get("id") or uuid.uuid4().hex
+            self.logger.info(
+                "render_run_start job=%s project=%s scenes=%s",
+                job_id,
+                project_id,
+                len(scenes),
+            )
 
             prepared_scenes = []
             for scene in scenes:
@@ -123,8 +146,20 @@ class RenderOrchestrator:
             uploaded_url = upload_render_output(final_path, project_id)
             if uploaded_url:
                 relative_url = uploaded_url
+                self.logger.info(
+                    "render_uploaded job=%s project=%s url=%s",
+                    job_id,
+                    project_id,
+                    uploaded_url,
+                )
             else:
                 relative_url = f"/videos/{project_id}/{final_path.name}?v={uuid.uuid4().hex[:6]}"
+                self.logger.info(
+                    "render_local_output job=%s project=%s file=%s",
+                    job_id,
+                    project_id,
+                    final_path,
+                )
             self._update(
                 job_id,
                 status="completed",
@@ -132,7 +167,18 @@ class RenderOrchestrator:
                 videoUrl=relative_url,
                 projectId=project_id,
             )
+            self.logger.info(
+                "render_run_complete job=%s project=%s",
+                job_id,
+                project_id,
+            )
         except Exception as exc:  # pylint: disable=broad-except
+            self.logger.exception(
+                "render_run_error job=%s project=%s error=%s",
+                job_id,
+                project_payload.get("id"),
+                exc,
+            )
             self._update(job_id, status="failed", progress=100, error=str(exc))
 
     def _update(self, job_id: str, **updates) -> None:
@@ -154,6 +200,12 @@ class RenderOrchestrator:
                 self.project_jobs[str(project_id)] = job["id"]
                 self._persist_index_locked()
             self._persist_job(job)
+            self.logger.debug(
+                "render_update job=%s project=%s updates=%s",
+                job_id,
+                project_id,
+                list(updates.keys()),
+            )
 
     def _persist_job(self, job: Dict, sync_remote: bool = True) -> None:
         job_path = self._job_path(job["id"])
@@ -187,12 +239,19 @@ class RenderOrchestrator:
         if not project_id:
             return None
         project_id = str(project_id)
+        self.logger.debug("render_get_by_project project=%s", project_id)
 
         with self.lock:
             job_id = self.project_jobs.get(project_id)
         if job_id:
             job = self.get(job_id)
             if job:
+                self.logger.debug(
+                    "render_get_by_project direct_hit project=%s job=%s status=%s",
+                    project_id,
+                    job_id,
+                    job.get("status"),
+                )
                 return job
 
         for job_path in self.render_dir.glob("*.json"):
@@ -208,6 +267,11 @@ class RenderOrchestrator:
                     self.jobs[job_data["id"]] = job_data
                     self.project_jobs[project_id] = job_data["id"]
                     self._persist_index_locked()
+                self.logger.info(
+                    "render_get_by_project hydrated_from_disk project=%s job=%s",
+                    project_id,
+                    job_data.get("id"),
+                )
                 return job_data
         remote_job_id = self.project_jobs.get(project_id)
         if remote_job_id:
@@ -218,7 +282,13 @@ class RenderOrchestrator:
                     self.project_jobs[project_id] = job_data["id"]
                     self._persist_index_locked()
                 self._persist_job(job_data, sync_remote=False)
+                self.logger.info(
+                    "render_get_by_project hydrated_remote project=%s job=%s",
+                    project_id,
+                    job_data.get("id"),
+                )
                 return job_data
+        self.logger.warning("render_get_by_project miss project=%s", project_id)
         return None
 
 

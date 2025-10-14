@@ -37,6 +37,7 @@ def get_storage_client() -> Optional[Dict[str, Any]]:
     global _STORAGE_CACHE, _BOTO3_UNAVAILABLE  # noqa: PLW0603  # pylint: disable=global-statement
 
     if _BOTO3_UNAVAILABLE:
+        print("storage:get_client boto3 unavailable or not installed")
         return None
     if _STORAGE_CACHE is not None:
         return _STORAGE_CACHE
@@ -53,6 +54,7 @@ def get_storage_client() -> Optional[Dict[str, Any]]:
     base_url = os.getenv("OBJECT_STORAGE_BASE_URL")
 
     if not bucket or not access_key or not secret_key:
+        print("storage:get_client missing configuration for bucket/access key")
         _STORAGE_CACHE = None
         return None
 
