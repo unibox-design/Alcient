@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,7 @@ class RenderOrchestrator:
         }
         with self.lock:
             self.jobs[job_id] = job
+            self._persist_job(job)
 
         future = self.executor.submit(self._run_render, job_id, project_payload)
         future.add_done_callback(lambda _f: None)
@@ -45,7 +47,17 @@ class RenderOrchestrator:
 
     def get(self, job_id: str) -> Optional[Dict]:
         with self.lock:
-            return self.jobs.get(job_id)
+            job = self.jobs.get(job_id)
+        if job:
+            return job
+
+        job_path = self._job_path(job_id)
+        if job_path.exists():
+            try:
+                return json.loads(job_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+        return None
 
     # ------------------------------------------------------------------
 
@@ -98,8 +110,25 @@ class RenderOrchestrator:
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
-                return
+                job_path = self._job_path(job_id)
+                if job_path.exists():
+                    try:
+                        job = json.loads(job_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        job = None
+                if not job:
+                    return
+                self.jobs[job_id] = job
             job.update(updates)
+            self._persist_job(job)
+
+    def _persist_job(self, job: Dict) -> None:
+        job_path = self._job_path(job["id"])
+        job_path.parent.mkdir(parents=True, exist_ok=True)
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+
+    def _job_path(self, job_id: str) -> Path:
+        return self.render_dir / f"{job_id}.json"
 
 
 _orchestrator: Optional[RenderOrchestrator] = None
@@ -110,4 +139,3 @@ def get_orchestrator(base_output: Path) -> RenderOrchestrator:
     if _orchestrator is None:
         _orchestrator = RenderOrchestrator(base_output)
     return _orchestrator
-
