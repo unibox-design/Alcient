@@ -28,9 +28,16 @@ export async function triggerRender(project) {
   return data;
 }
 
-export async function fetchRenderStatus(jobId) {
-  const data = await jsonRequest(`${BASE}/api/project/render/${jobId}`);
+export async function fetchRenderStatus(jobId, projectId) {
+  if (!jobId) {
+    throw new Error("job id is required");
+  }
+  let url = `${BASE}/api/project/render/${jobId}`;
+  if (projectId) {
+    const params = new URLSearchParams({ projectId });
+    url = `${url}?${params.toString()}`;
+  }
+  const data = await jsonRequest(url);
   if (data.videoUrl) data.videoUrl = absoluteUrl(data.videoUrl);
   return data;
 }
-

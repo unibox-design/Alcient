@@ -83,9 +83,31 @@ export const triggerRender = createAsyncThunk(
 
 export const fetchRenderStatus = createAsyncThunk(
   "project/fetchRenderStatus",
-  async (jobId, { rejectWithValue }) => {
+  async (jobRef, { getState, rejectWithValue }) => {
     try {
-      return await fetchRenderStatusApi(jobId);
+      const state = getState();
+      let jobId = null;
+      let projectId = null;
+
+      if (typeof jobRef === "string") {
+        jobId = jobRef;
+      } else if (jobRef && typeof jobRef === "object") {
+        jobId = jobRef.jobId ?? null;
+        projectId = jobRef.projectId ?? null;
+      }
+
+      if (!jobId) {
+        jobId = state.project.render.jobId;
+      }
+      if (!projectId) {
+        projectId = state.project.id;
+      }
+
+      if (!jobId) {
+        throw new Error("Render job id is not available");
+      }
+
+      return await fetchRenderStatusApi(jobId, projectId);
     } catch (err) {
       return rejectWithValue({ error: err.message || "Unable to fetch render status" });
     }

@@ -14,17 +14,19 @@ export default function PreviewPanel() {
   const aspectClass = ASPECT_CLASS[format] || ASPECT_CLASS.landscape;
   const widthClass = format === "portrait" ? "w-2/3 max-w-[260px]" : "w-full";
   const renderState = useSelector((state) => state.project.render);
+  const projectId = useSelector((state) => state.project.id);
 
   useEffect(() => {
     if (["queued", "rendering"].includes(renderState.status) && renderState.jobId) {
-      dispatch(fetchRenderStatus(renderState.jobId));
+      const payload = { jobId: renderState.jobId, projectId };
+      dispatch(fetchRenderStatus(payload));
       const interval = setInterval(() => {
-        dispatch(fetchRenderStatus(renderState.jobId));
+        dispatch(fetchRenderStatus(payload));
       }, 2000);
       return () => clearInterval(interval);
     }
     return undefined;
-  }, [dispatch, renderState.status, renderState.jobId]);
+  }, [dispatch, projectId, renderState.status, renderState.jobId]);
 
   const statusText = () => {
     switch (renderState.status) {

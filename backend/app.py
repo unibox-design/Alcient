@@ -411,7 +411,13 @@ def api_project_render_status(job_id):
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
         return response, 204
     orchestrator = get_orchestrator(OUTPUT_BASE)
+    project_hint = request.args.get("projectId")
+
     job = orchestrator.get(job_id)
+    if not job and project_hint:
+        job = orchestrator.get_by_project(project_hint)
+    if not job:
+        job = orchestrator.get_by_project(job_id)
     if not job:
         return jsonify({"error": "job not found"}), 404
     return jsonify(job)

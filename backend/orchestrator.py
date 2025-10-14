@@ -19,12 +19,14 @@ class RenderOrchestrator:
         self.render_dir = self.base_output / "renders"
         self.audio_cache = self.base_output / "cache" / "audio"
         self.video_cache = self.base_output / "cache" / "video"
+        self.project_index_path = self.render_dir / "_project_index.json"
         self.render_dir.mkdir(parents=True, exist_ok=True)
         self.audio_cache.mkdir(parents=True, exist_ok=True)
         self.video_cache.mkdir(parents=True, exist_ok=True)
 
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.jobs: Dict[str, Dict] = {}
+        self.project_jobs: Dict[str, str] = self._load_index()
         self.lock = threading.Lock()
 
     def submit(self, project_payload: Dict) -> Dict:
@@ -39,6 +41,10 @@ class RenderOrchestrator:
         }
         with self.lock:
             self.jobs[job_id] = job
+            project_id = project_payload.get("id")
+            if project_id:
+                self.project_jobs[str(project_id)] = job_id
+                self._persist_index_locked()
             self._persist_job(job)
 
         future = self.executor.submit(self._run_render, job_id, project_payload)
@@ -54,9 +60,14 @@ class RenderOrchestrator:
         job_path = self._job_path(job_id)
         if job_path.exists():
             try:
-                return json.loads(job_path.read_text(encoding="utf-8"))
+                job = json.loads(job_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 return None
+            if not isinstance(job, dict):
+                return None
+            with self.lock:
+                self.jobs[job_id] = job
+            return job
         return None
 
     # ------------------------------------------------------------------
@@ -116,10 +127,14 @@ class RenderOrchestrator:
                         job = json.loads(job_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError:
                         job = None
-                if not job:
-                    return
-                self.jobs[job_id] = job
+            if not job:
+                return
+            self.jobs[job_id] = job
             job.update(updates)
+            project_id = job.get("projectId")
+            if project_id:
+                self.project_jobs[str(project_id)] = job["id"]
+                self._persist_index_locked()
             self._persist_job(job)
 
     def _persist_job(self, job: Dict) -> None:
@@ -129,6 +144,48 @@ class RenderOrchestrator:
 
     def _job_path(self, job_id: str) -> Path:
         return self.render_dir / f"{job_id}.json"
+
+    def _load_index(self) -> Dict[str, str]:
+        if self.project_index_path.exists():
+            try:
+                data = json.loads(self.project_index_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _persist_index_locked(self) -> None:
+        self.project_index_path.parent.mkdir(parents=True, exist_ok=True)
+        self.project_index_path.write_text(json.dumps(self.project_jobs), encoding="utf-8")
+
+    def get_by_project(self, project_id: str) -> Optional[Dict]:
+        if not project_id:
+            return None
+        project_id = str(project_id)
+
+        with self.lock:
+            job_id = self.project_jobs.get(project_id)
+        if job_id:
+            job = self.get(job_id)
+            if job:
+                return job
+
+        for job_path in self.render_dir.glob("*.json"):
+            name = job_path.name
+            if not name.endswith(".json") or name.startswith("_"):
+                continue
+            try:
+                job_data = json.loads(job_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if job_data.get("projectId") == project_id and job_data.get("id"):
+                with self.lock:
+                    self.jobs[job_data["id"]] = job_data
+                    self.project_jobs[project_id] = job_data["id"]
+                    self._persist_index_locked()
+                return job_data
+        return None
 
 
 _orchestrator: Optional[RenderOrchestrator] = None
