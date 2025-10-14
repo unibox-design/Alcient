@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import requests
+import logging
 
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
@@ -68,6 +69,7 @@ def ensure_local_clip(url: str, cache_dir: Path) -> Path:
     if path.exists():
         return path
 
+    logging.getLogger(__name__).info("media_download url=%s", url)
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     path.write_bytes(resp.content)
@@ -165,6 +167,7 @@ def render_project(
 ) -> Path:
     """Render the final video by normalising scenes then concatenating."""
 
+    logger = logging.getLogger(__name__)
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -185,10 +188,21 @@ def render_project(
                     media_path = ensure_local_clip(media_url, cache_dir)
                 except requests.RequestException as exc:
                     print("Media download failed", media_url, exc)
+                     logger.warning("media_download_failed url=%s error=%s", media_url, exc)
+                 else:
+                     logger.info("media_cached path=%s", media_path)
 
             dest = temp_dir / f"scene_{idx:03d}.mp4"
+            logger.info(
+                "scene_render start index=%s duration=%.2f media=%s audio=%s",
+                idx,
+                duration,
+                bool(media_path),
+                audio_path,
+            )
             _build_scene_video(media_path, audio_path, duration, orientation, dest)
             scene_paths.append(dest)
+            logger.info("scene_render complete index=%s output=%s", idx, dest)
 
         if not scene_paths:
             raise RenderError("No scene clips were generated")

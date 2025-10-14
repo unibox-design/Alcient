@@ -121,10 +121,23 @@ class RenderOrchestrator:
             prepared_scenes = []
             for scene in scenes:
                 script_text = scene.get("script") or scene.get("text") or ""
+                self.logger.info(
+                    "render_scene_prepare job=%s scene=%s textLen=%s",
+                    job_id,
+                    scene.get("id"),
+                    len(script_text),
+                )
                 audio_path, audio_duration = ensure_tts_audio(
                     script_text,
                     scene.get("ttsVoice") or voice_model,
                     self.audio_cache,
+                )
+                self.logger.info(
+                    "render_scene_tts job=%s scene=%s audio=%.2fs path=%s",
+                    job_id,
+                    scene.get("id"),
+                    audio_duration,
+                    audio_path,
                 )
                 prepared_scenes.append({
                     **scene,
@@ -141,6 +154,12 @@ class RenderOrchestrator:
                 orientation=orientation,
                 output_dir=output_dir,
                 cache_dir=cache_dir,
+            )
+            self.logger.info(
+                "render_project_complete job=%s project=%s output=%s",
+                job_id,
+                project_id,
+                final_path,
             )
 
             uploaded_url = upload_render_output(final_path, project_id)

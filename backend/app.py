@@ -1,5 +1,4 @@
 # backend/app.py
-import logging
 import os
 import re
 import uuid
@@ -8,6 +7,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
+import logging
+
+logging.basicConfig(level=logging.INFO)
 from werkzeug.utils import secure_filename
 
 from llm import generate_narration, generate_storyboard
