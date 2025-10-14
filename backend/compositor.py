@@ -188,9 +188,9 @@ def render_project(
                     media_path = ensure_local_clip(media_url, cache_dir)
                 except requests.RequestException as exc:
                     print("Media download failed", media_url, exc)
-                     logger.warning("media_download_failed url=%s error=%s", media_url, exc)
-                 else:
-                     logger.info("media_cached path=%s", media_path)
+                    logger.warning("media_download_failed url=%s error=%s", media_url, exc)
+                else:
+                    logger.info("media_cached path=%s", media_path)
 
             dest = temp_dir / f"scene_{idx:03d}.mp4"
             logger.info(
