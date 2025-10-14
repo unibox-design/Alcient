@@ -93,6 +93,12 @@ def apply_cors_headers(response):
     return response
 
 
+@app.route("/", methods=["GET"])
+def healthcheck():
+    """Simple health endpoint so platform monitors see a 200 OK."""
+    return jsonify({"status": "ok"}), 200
+
+
 def _coerce_positive_int(value, default=1):
     try:
         cast = int(value)

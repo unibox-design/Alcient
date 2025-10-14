@@ -250,7 +250,7 @@ export default function MainEditor({ active }) {
                     </div>
                     </div>
 
-                    {scene.keywords?.length > 0 && (
+                    {/* {scene.keywords?.length > 0 && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {scene.keywords.map((kw) => (
                         <span
@@ -270,7 +270,7 @@ export default function MainEditor({ active }) {
                     >
                       Visual cue: {scene.visual}
                     </p>
-                  )}
+                  )} */}
                 </div>
               </div>
             );
