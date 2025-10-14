@@ -86,6 +86,7 @@ OUTPUT_BASE = Path(os.path.dirname(__file__)) / "outputs"
 
 @app.after_request
 def apply_cors_headers(response):
+    """Attach permissive CORS headers to every response."""
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
@@ -412,4 +413,5 @@ def api_project_render_status(job_id):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    debug = os.getenv("FLASK_DEBUG") == "1"
+    app.run(host="0.0.0.0", port=port, debug=debug)
