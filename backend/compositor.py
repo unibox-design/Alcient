@@ -85,7 +85,7 @@ def _build_scene_video(
     duration_str = f"{max(duration, 0.1):.3f}"
 
     vf_filters = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"\
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height}"
     )
 
@@ -135,22 +135,23 @@ def _build_scene_video(
         run_ffmpeg(args)
     else:
         color = "0x141414"
-        args = [
-            "-y",
-            "-t",
-            duration_str,
-            "-vf",
-            vf_filters,
+        color_video = [
             "-f",
             "lavfi",
             "-i",
             f"color=c={color}:s={width}x{height}:d={duration_str}",
+        ]
+        args = [
+            "-y",
             "-i",
             str(audio_path),
+            *color_video,
             "-map",
-            "0:v:0",
+            "1:v:0",
             "-map",
-            "1:a:0",
+            "0:a:0",
+            "-vf",
+            vf_filters,
         ] + encode_tail
         run_ffmpeg(args)
 
