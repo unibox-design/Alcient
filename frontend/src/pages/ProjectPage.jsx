@@ -34,43 +34,49 @@ export default function ProjectPage() {
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col">
-  {/* Header */}
-  <header className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
-    <h1 className="text-xl font-semibold text-gray-800">{projectTitle}</h1>
-    <Link
-      to="/"
-      className="text-sm text-gray-500 hover:text-gray-700 transition"
-    >
-      ← Back to Templates
-    </Link>
-  </header>
+      {/* Header */}
+      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
+        <Link
+          to="/"
+          className="flex items-center gap-2 text-xl font-semibold text-gray-800 hover:text-gray-900 transition"
+        >
+          <img src="/alcient.svg" alt="Alcient" className="h-8 w-auto" />
+          ALCIENT
+        </Link>
+        <Link
+          to="/"
+          className="text-sm text-gray-500 hover:text-gray-700 transition"
+        >
+          ← Back to Templates
+        </Link>
+      </header>
 
-  {/* Main workspace grid */}
-  <main className="flex flex-1 overflow-hidden">
-    {/* Column 1: LeftNav */}
-    <div className="w-[5%] min-w-[60px] bg-white border-r border-gray-200 flex flex-col">
-      <LeftNav active={activeTab} onChange={setActiveTab} />
-    </div>
+      {/* Main workspace grid */}
+      <main className="flex flex-1 overflow-hidden">
+        {/* Column 1: LeftNav */}
+        <div className="w-[5%] min-w-[60px] bg-white border-r border-gray-200 flex flex-col">
+          <LeftNav active={activeTab} onChange={setActiveTab} />
+        </div>
 
-    {/* Column 2: SmartSidebar */}
-    <div className="w-[15%] min-w-[200px] bg-white border-r border-gray-200 overflow-y-auto">
-      <SmartSidebar active={activeTab} />
-    </div>
+        {/* Column 2: SmartSidebar */}
+        <div className="w-[15%] min-w-[200px] bg-white border-r border-gray-200 overflow-y-auto">
+          <SmartSidebar active={activeTab} />
+        </div>
 
-    {/* Column 3: MainEditor */}
-    <div className="w-[40%] bg-gray-50 flex flex-col">
-      {/* Make this area scrollable */}
-      <div className="flex-1 overflow-y-auto">
-        <MainEditor active={activeTab} />
-      </div>
-    </div>
+        {/* Column 3: MainEditor */}
+        <div className="w-[40%] bg-gray-50 flex flex-col">
+          {/* Make this area scrollable */}
+          <div className="flex-1 overflow-y-auto">
+            <MainEditor active={activeTab} />
+          </div>
+        </div>
 
-    {/* Column 4: Preview */}
-    <div className="w-[40%] bg-white border-l border-gray-200 overflow-y-auto">
-      <PreviewPanel />
+        {/* Column 4: Preview */}
+        <div className="w-[40%] bg-white border-l border-gray-200 overflow-y-auto">
+          <PreviewPanel />
+        </div>
+      </main>
     </div>
-  </main>
-</div>
 
   );
 }

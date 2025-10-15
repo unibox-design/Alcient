@@ -103,25 +103,36 @@ def generate_storyboard(
       "title": "...",
       "narration": "...",
       "scenes": [
-         { "text": "...", "duration": 5, "keywords": ["..."], "ttsVoice": "Default" }
+         { "section": "...", "text": "...", "duration": 5, "keywords": ["..."], "ttsVoice": "Default" }
       ]
     }
     """
     try:
+        target_seconds = max(30, int(target_seconds or 60))
+        target_words = max(120, int(target_seconds * 3.0))
+        lower_words = int(target_words * 0.9)
+        upper_words = int(target_words * 1.1)
         response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert video director planning a narrated video. "
-                        "Respond ONLY with valid JSON. The JSON must include keys: "
-                        "'title' (string <= 80 chars), 'narration' (2-3 short paragraphs), "
-                        f"'scenes' (array of around {scene_hint} scenes). Each scene object "
-                        "needs 'text' (<= 2 sentences), 'duration' (integer seconds), and "
-                        "'keywords' (array of 2-4 concise search terms). Include 'ttsVoice' if "
-                        "a specific voice is suggested. Ensure the narration flows naturally "
-                        "through the scene order."
+                        "You are an expert short-form video content creator and scriptwriter, "
+                        "crafting fast-paced, high-retention scripts for TikTok, Instagram Reels, "
+                        "and YouTube Shorts. Transform the provided idea and keywords into a compelling "
+                        "narrative that flows through these beats in order: THE HOOK, PROBLEM/CONTEXT, "
+                        "SOLUTION/VALUE DROP. You may add supporting beats between them "
+                        "when helpful, but the story must start with a hook and end with summarizing the main point, offering a final thought or insight, or providing a call to reflection on the topic. "
+                        "Write in punchy, conversational language with vivid imagery, keeping each scene "
+                        "to one or two crisp sentences. Respond ONLY with valid JSON containing: "
+                        "'title' (<= 80 characters), 'narration' (2-3 short energetic paragraphs), and "
+                        f"'scenes' (array of around {scene_hint} scenes). Each scene object must include "
+                        "'section' (one of \"THE HOOK\", \"PROBLEM/CONTEXT\", \"SOLUTION/VALUE DROP\", "
+                        "\"CALL TO ACTION\", or a concise supporting beat label), 'text' (<= 2 sentences), "
+                        "'duration' (integer seconds), and 'keywords' (array of 2-4 high-signal search terms). "
+                        "Include 'ttsVoice' if a specific voice is essential. Ensure scene durations sum close "
+                        "to the target runtime."
                     ),
                 },
                 {
@@ -132,6 +143,7 @@ def generate_storyboard(
                         f"Target aspect ratio: {aspect}.\n"
                         f"Target runtime: {int(target_seconds)} seconds.\n"
                         f"Desired voice style: {voice_model}.\n"
+                        f"Total narration length should stay between {lower_words} and {upper_words} words so that the voiceover fits the runtime, averaging about {target_words} words overall.\n"
                         f"Plan for roughly {scene_hint} scenes so that the pacing feels even. "
                         "Scene durations should add up close to the target runtime. "
                         "Remember: respond strictly with JSON."
@@ -147,7 +159,8 @@ def generate_storyboard(
             raise ValueError("LLM did not return valid storyboard JSON")
         scenes = data.get("scenes") or []
         # Normalise scene fields.
-        for scene in scenes:
+        default_sections = ["THE HOOK", "PROBLEM/CONTEXT", "SOLUTION/VALUE DROP", "CALL TO ACTION"]
+        for idx, scene in enumerate(scenes):
             if not isinstance(scene, dict):
                 continue
             try:
@@ -157,6 +170,11 @@ def generate_storyboard(
             scene["duration"] = max(3, min(duration, 12))
             if "keywords" not in scene or not isinstance(scene["keywords"], list):
                 scene["keywords"] = []
+            if not scene.get("section"):
+                if idx < len(default_sections):
+                    scene["section"] = default_sections[idx]
+                else:
+                    scene["section"] = "Supporting Beat"
         scenes = _scale_scene_durations(scenes, target_seconds)
 
         return {
@@ -169,3 +187,99 @@ def generate_storyboard(
     except Exception as e:
         print("Error in generate_storyboard:", e)
         return {"error": str(e)}
+
+
+def enrich_scene_metadata(scenes, aspect: str = "landscape", max_keywords: int = 4):
+    """
+    Ask the LLM to suggest search keywords and optional generative prompts for each scene.
+    `scenes` should be an iterable of dicts with keys: id, text.
+    """
+    cleaned_scenes = []
+    for idx, scene in enumerate(scenes or []):
+        if not isinstance(scene, dict):
+            continue
+        text = (scene.get("text") or scene.get("script") or "").strip()
+        if not text:
+            continue
+        scene_id = str(scene.get("id") or idx)
+        cleaned_scenes.append(
+            {
+                "id": scene_id,
+                "text": text[:700],
+            }
+        )
+
+    if not cleaned_scenes:
+        return []
+
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert short-form video content strategist. "
+                        "Given scene descriptions you return high-signal search keywords and concise image prompts. "
+                        "Respond ONLY with valid JSON of the form: "
+                        "{\"scenes\":[{\"id\":\"...\",\"keywords\":[\"k1\",\"k2\"],\"imagePrompt\":\"...\"}, ...]}. "
+                        "Each keywords array must contain 2-4 short search phrases optimised for stock or generative lookup. "
+                        "Each imagePrompt should be <=160 characters, vivid, and suitable for text-to-image/video models. "
+                        "If unsure, still provide best-effort keywords and prompts. "
+                        "Do not include explanations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "aspect": aspect,
+                            "scenes": cleaned_scenes,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0.4,
+            max_tokens=600,
+        )
+        raw = response.choices[0].message.content.strip()
+        data = _extract_json_block(raw)
+        if not isinstance(data, dict):
+            raise ValueError("LLM did not return JSON")
+        items = data.get("scenes")
+        if not isinstance(items, list):
+            raise ValueError("LLM JSON missing 'scenes'")
+    except Exception as exc:
+        raise RuntimeError(f"LLM scene enrichment failed: {exc}") from exc
+
+    results = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        scene_id = str(item.get("id") or "")
+        if not scene_id:
+            continue
+        raw_keywords = item.get("keywords") or []
+        if isinstance(raw_keywords, str):
+            raw_keywords = [raw_keywords]
+        keywords = []
+        for kw in raw_keywords:
+            if isinstance(kw, str):
+                cleaned_kw = kw.strip()
+                if cleaned_kw:
+                    keywords.append(cleaned_kw)
+        keywords = keywords[:max_keywords]
+        image_prompt = item.get("imagePrompt")
+        if isinstance(image_prompt, str):
+            image_prompt = image_prompt.strip()
+        else:
+            image_prompt = None
+        results.append(
+            {
+                "id": scene_id,
+                "keywords": keywords,
+                "imagePrompt": image_prompt,
+            }
+        )
+    return results

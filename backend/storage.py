@@ -6,9 +6,12 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+import logging
 
 _STORAGE_CACHE: Optional[Dict[str, Any]] = None
 _BOTO3_UNAVAILABLE = False
+
+LOGGER = logging.getLogger(__name__)
 
 try:
     import boto3  # type: ignore
@@ -37,7 +40,7 @@ def get_storage_client() -> Optional[Dict[str, Any]]:
     global _STORAGE_CACHE, _BOTO3_UNAVAILABLE  # noqa: PLW0603  # pylint: disable=global-statement
 
     if _BOTO3_UNAVAILABLE:
-        print("storage:get_client boto3 unavailable or not installed")
+        LOGGER.warning("storage:get_client boto3 unavailable or not installed")
         return None
     if _STORAGE_CACHE is not None:
         return _STORAGE_CACHE
@@ -54,7 +57,7 @@ def get_storage_client() -> Optional[Dict[str, Any]]:
     base_url = os.getenv("OBJECT_STORAGE_BASE_URL")
 
     if not bucket or not access_key or not secret_key:
-        print("storage:get_client missing configuration for bucket/access key")
+        LOGGER.warning("storage:get_client missing configuration for bucket/access key")
         _STORAGE_CACHE = None
         return None
 
@@ -94,7 +97,7 @@ def upload_render_output(file_path: Path, project_id: str) -> Optional[str]:
     try:
         storage["client"].upload_file(str(file_path), storage["bucket"], key, ExtraArgs=extra_args)
     except Exception as exc:  # pragma: no cover - network failure
-        print("upload_render_output failed:", exc)
+        LOGGER.error("upload_render_output failed: %s", exc)
         return None
 
     return f'{storage["base_url"]}/{key}'
@@ -115,7 +118,7 @@ def persist_job_metadata(job: Dict[str, Any]) -> None:
             ContentType="application/json",
         )
     except Exception as exc:  # pragma: no cover
-        print("persist_job_metadata failed:", exc)
+        LOGGER.error("persist_job_metadata failed: %s", exc)
 
 
 def fetch_job_metadata(job_id: str) -> Optional[Dict[str, Any]]:
@@ -128,7 +131,7 @@ def fetch_job_metadata(job_id: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # pragma: no cover
         if ClientError is not None and isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
             return None
-        print("fetch_job_metadata failed:", exc)
+        LOGGER.error("fetch_job_metadata failed: %s", exc)
         return None
     return json.loads(response["Body"].read())
 
@@ -145,7 +148,7 @@ def persist_project_index(mapping: Dict[str, str]) -> None:
             ContentType="application/json",
         )
     except Exception as exc:  # pragma: no cover
-        print("persist_project_index failed:", exc)
+        LOGGER.error("persist_project_index failed: %s", exc)
 
 
 def fetch_project_index() -> Dict[str, str]:
@@ -157,7 +160,7 @@ def fetch_project_index() -> Dict[str, str]:
     except Exception as exc:  # pragma: no cover
         if ClientError is not None and isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
             return {}
-        print("fetch_project_index failed:", exc)
+        LOGGER.error("fetch_project_index failed: %s", exc)
         return {}
     try:
         payload = json.loads(response["Body"].read())

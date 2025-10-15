@@ -1,7 +1,14 @@
 // src/store/projectSlice.js
 import { createAsyncThunk, createSlice, nanoid } from "@reduxjs/toolkit";
 import { estimateSpeechDuration } from "../lib/speech";
-import { triggerRender as triggerRenderApi, fetchRenderStatus as fetchRenderStatusApi } from "../lib/renderApi";
+import {
+  triggerRender as triggerRenderApi,
+  fetchRenderStatus as fetchRenderStatusApi,
+  cancelRender as cancelRenderApi,
+  pauseRender as pauseRenderApi,
+} from "../lib/renderApi";
+import { suggestClips } from "../lib/mediaApi";
+import { enrichScenesMetadata } from "../lib/sceneApi";
 
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
@@ -109,8 +116,101 @@ export const fetchRenderStatus = createAsyncThunk(
 
       return await fetchRenderStatusApi(jobId, projectId);
     } catch (err) {
-      console.warn("fetchRenderStatus:error", { jobId, projectId, message: err.message, error: err });
       return rejectWithValue({ error: err.message || "Unable to fetch render status" });
+    }
+  }
+);
+
+export const cancelRenderJob = createAsyncThunk(
+  "project/cancelRenderJob",
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const jobId = getState().project.render.jobId;
+      if (!jobId) {
+        throw new Error("No active render job to cancel");
+      }
+      const job = await cancelRenderApi(jobId);
+      return job;
+    } catch (err) {
+      return rejectWithValue({ error: err.message || "Failed to cancel render" });
+    }
+  }
+);
+
+export const pauseRenderJob = createAsyncThunk(
+  "project/pauseRenderJob",
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const jobId = getState().project.render.jobId;
+      if (!jobId) {
+        throw new Error("No active render job to pause");
+      }
+      const job = await pauseRenderApi(jobId);
+      return job;
+    } catch (err) {
+      return rejectWithValue({ error: err.message || "Failed to pause render" });
+    }
+  }
+);
+
+export const enrichSceneMetadata = createAsyncThunk(
+  "project/enrichSceneMetadata",
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const state = getState().project;
+      if (!state.scenes.length) {
+        return { scenes: [], source: null };
+      }
+      const payload = {
+        format: state.format,
+        scenes: state.scenes.map((scene) => ({
+          id: scene.id,
+          text: scene.text || scene.script || "",
+        })),
+      };
+      const data = await enrichScenesMetadata(payload);
+      return {
+        scenes: data.scenes || [],
+        source: data.source || null,
+      };
+    } catch (err) {
+      return rejectWithValue({ error: err.message || "Failed to enrich scenes" });
+    }
+  }
+);
+
+export const autofillSceneMedia = createAsyncThunk(
+  "project/autofillSceneMedia",
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const state = getState().project;
+      const format = state.format || "landscape";
+      const updates = [];
+      let processed = 0;
+      for (const scene of state.scenes) {
+        if (processed >= 8) {
+          break;
+        }
+        const sceneText = (scene.text || scene.script || "").trim();
+        if (!sceneText || scene.media) {
+          continue;
+        }
+        const { results, keywords } = await suggestClips({
+          sceneText,
+          keywords: scene.keywords || [],
+          format,
+        });
+        const chosen = results.find((clip) => clip && clip.url);
+        updates.push({
+          sceneId: scene.id,
+          media: chosen || null,
+          keywords: keywords || [],
+        });
+        processed += 1;
+      }
+      return updates;
+    } catch (err) {
+      return rejectWithValue({ error: err.message || "Failed to suggest media" });
     }
   }
 );
@@ -120,11 +220,13 @@ export const fetchRenderStatus = createAsyncThunk(
  * {
  *   id: string,
  *   text: string,
+ *   section?: string,
  *   duration: number, // seconds
  *   ttsVoice: string|null,
  *   media: { id, url, thumbnail, width, height, duration, source, attribution } | null,
  *   order: number,
- *   keywords: string[]
+ *   keywords: string[],
+ *   imagePrompt?: string|null
  * }
  */
 
@@ -150,6 +252,15 @@ const initialState = {
     error: null,
     autoTrigger: false,
     progress: 0,
+  },
+  mediaSuggest: {
+    status: "idle",
+    error: null,
+  },
+  sceneEnrich: {
+    status: "idle",
+    error: null,
+    source: null,
   },
 };
 
@@ -206,6 +317,7 @@ const projectSlice = createSlice({
           script: s.script ?? s.text ?? "",
           visual: s.visual ?? s.description ?? null,
           keywords: s.keywords || [],
+          imagePrompt: s.imagePrompt ?? null,
           audioDuration: Math.round(audioEstimate * 100) / 100,
           duration:
             typeof s.duration === "number"
@@ -220,8 +332,17 @@ const projectSlice = createSlice({
         status: "idle",
         jobId: null,
         error: null,
-        autoTrigger: true,
+        autoTrigger: false,
         videoUrl: null,
+      };
+      state.mediaSuggest = {
+        status: "idle",
+        error: null,
+      };
+      state.sceneEnrich = {
+        status: "idle",
+        error: null,
+        source: null,
       };
     },
     addScene(state, action) {
@@ -241,6 +362,7 @@ const projectSlice = createSlice({
         ttsVoice: state.voiceModel,
         media: null,
         keywords: [],
+        imagePrompt: null,
         visual: null,
         script: text,
         order,
@@ -354,6 +476,7 @@ const projectSlice = createSlice({
           ttsVoice: scene.ttsVoice ?? null,
           media: scene.media ?? null,
           keywords: scene.keywords || [],
+          imagePrompt: scene.imagePrompt ?? null,
           visual: scene.visual || null,
           script: scene.script || scene.text || "",
           order: scene.order ?? index,
@@ -379,8 +502,17 @@ const projectSlice = createSlice({
           jobId: null,
           videoUrl: null,
           error: null,
-          autoTrigger: true,
+          autoTrigger: false,
           progress: 0,
+        };
+        state.mediaSuggest = {
+          status: "idle",
+          error: null,
+        };
+        state.sceneEnrich = {
+          status: "idle",
+          error: null,
+          source: null,
         };
       })
       .addCase(generateProjectFromPrompt.rejected, (state, action) => {
@@ -397,6 +529,7 @@ const projectSlice = createSlice({
         state.render.jobId = null;
         state.render.autoTrigger = false;
         state.render.progress = 0;
+        state.render.videoUrl = null;
       })
       .addCase(triggerRender.fulfilled, (state, action) => {
         const job = action.payload || {};
@@ -417,9 +550,19 @@ const projectSlice = createSlice({
       })
       .addCase(fetchRenderStatus.fulfilled, (state, action) => {
         const job = action.payload || {};
-        state.render.status = job.status || state.render.status;
-        state.render.jobId = job.id || state.render.jobId;
-        state.render.videoUrl = job.videoUrl || state.render.videoUrl;
+        const status = job.status || state.render.status;
+        state.render.status = status;
+        const isFinalCancelled = status === "cancelled";
+        const isFinalPaused = status === "paused";
+        if (job.id && !isFinalCancelled && !isFinalPaused) {
+          state.render.jobId = job.id;
+        }
+        if (isFinalCancelled || isFinalPaused) {
+          state.render.jobId = null;
+          state.render.videoUrl = null;
+        } else if (job.videoUrl) {
+          state.render.videoUrl = job.videoUrl;
+        }
         state.render.error = job.error || null;
         state.render.autoTrigger = false;
         state.render.progress =
@@ -427,11 +570,118 @@ const projectSlice = createSlice({
         if (job.status === "completed" && !state.isDirty) {
           state.isDirty = false;
         }
+        if ((isFinalCancelled || isFinalPaused) && status) {
+          state.isDirty = true;
+        }
       })
       .addCase(fetchRenderStatus.rejected, (state, action) => {
         state.render.error =
           action.payload?.error || action.error?.message || "Failed to fetch render status";
         state.render.status = state.render.status === "rendering" ? "rendering" : state.render.status;
+      })
+      .addCase(cancelRenderJob.pending, (state) => {
+        state.render.error = null;
+        if (state.render.jobId) {
+          state.render.status = "cancelling";
+        }
+      })
+      .addCase(cancelRenderJob.fulfilled, (state, action) => {
+        const job = action.payload || {};
+        const finalStatus = job.status || "cancelled";
+        state.render.status = finalStatus;
+        state.render.error = job.error || null;
+        state.render.progress = typeof job.progress === "number" ? job.progress : state.render.progress;
+        state.render.videoUrl = job.videoUrl || (finalStatus === "cancelled" ? null : state.render.videoUrl);
+        state.render.jobId = finalStatus === "cancelled" ? null : (job.id || state.render.jobId);
+        state.render.autoTrigger = false;
+        state.isDirty = true;
+      })
+      .addCase(cancelRenderJob.rejected, (state, action) => {
+        state.render.error =
+          action.payload?.error || action.error?.message || "Failed to cancel render";
+      })
+      .addCase(pauseRenderJob.pending, (state) => {
+        state.render.error = null;
+        if (state.render.jobId) {
+          state.render.status = "pausing";
+        }
+      })
+      .addCase(pauseRenderJob.fulfilled, (state, action) => {
+        const job = action.payload || {};
+        const finalStatus = job.status || "paused";
+        state.render.status = finalStatus;
+        state.render.error = job.error || null;
+        state.render.progress = typeof job.progress === "number" ? job.progress : state.render.progress;
+        state.render.videoUrl = job.videoUrl || (finalStatus === "paused" ? null : state.render.videoUrl);
+        state.render.jobId = finalStatus === "paused" ? null : (job.id || state.render.jobId);
+        state.render.autoTrigger = false;
+        state.isDirty = true;
+      })
+      .addCase(pauseRenderJob.rejected, (state, action) => {
+        state.render.error =
+          action.payload?.error || action.error?.message || "Failed to pause render";
+      })
+      .addCase(enrichSceneMetadata.pending, (state) => {
+        state.sceneEnrich.status = "loading";
+        state.sceneEnrich.error = null;
+        state.sceneEnrich.source = null;
+      })
+      .addCase(enrichSceneMetadata.fulfilled, (state, action) => {
+        state.sceneEnrich.status = "succeeded";
+        const payload = action.payload || {};
+        state.sceneEnrich.source = payload.source || null;
+        const updates = Array.isArray(payload.scenes) ? payload.scenes : [];
+        updates.forEach((item) => {
+          if (!item || typeof item !== "object") return;
+          const scene = state.scenes.find((s) => s.id === item.id);
+          if (!scene) return;
+          if (Array.isArray(item.keywords) && item.keywords.length) {
+            const merged = Array.from(
+              new Set([...(scene.keywords || []), ...item.keywords.filter(Boolean)])
+            );
+            scene.keywords = merged.slice(0, 6);
+          }
+          if (item.imagePrompt) {
+            scene.imagePrompt = item.imagePrompt;
+          }
+        });
+      })
+      .addCase(enrichSceneMetadata.rejected, (state, action) => {
+        state.sceneEnrich.status = "failed";
+        state.sceneEnrich.error =
+          action.payload?.error || action.error?.message || "Failed to enrich scenes";
+        state.sceneEnrich.source = null;
+      })
+      .addCase(autofillSceneMedia.pending, (state) => {
+        state.mediaSuggest.status = "loading";
+        state.mediaSuggest.error = null;
+      })
+      .addCase(autofillSceneMedia.fulfilled, (state, action) => {
+        state.mediaSuggest.status = "succeeded";
+        const updates = action.payload || [];
+        let changed = false;
+        updates.forEach(({ sceneId, media, keywords }) => {
+          const scene = state.scenes.find((s) => s.id === sceneId);
+          if (!scene) return;
+          if (keywords && keywords.length) {
+            const combined = Array.from(
+              new Set([...(scene.keywords || []), ...keywords.filter(Boolean)])
+            );
+            scene.keywords = combined.slice(0, 6);
+          }
+          if (media && media.url) {
+            scene.media = media;
+            changed = true;
+          }
+        });
+        if (changed) {
+          state.isDirty = true;
+        }
+      })
+      .addCase(autofillSceneMedia.rejected, (state, action) => {
+        state.mediaSuggest.status = "failed";
+        state.mediaSuggest.error =
+          action.payload?.error || action.error?.message || "Failed to suggest media";
       });
   },
 });

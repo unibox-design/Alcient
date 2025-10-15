@@ -37,9 +37,27 @@ export async function fetchRenderStatus(jobId, projectId) {
     const params = new URLSearchParams({ projectId });
     url = `${url}?${params.toString()}`;
   }
-  console.debug("fetchRenderStatus:request", { jobId, projectId, url });
   const data = await jsonRequest(url);
-  console.debug("fetchRenderStatus:response", { jobId, projectId, status: data.status, videoUrl: data.videoUrl });
   if (data.videoUrl) data.videoUrl = absoluteUrl(data.videoUrl);
   return data;
+}
+
+async function controlRender(jobId, action) {
+  if (!jobId) {
+    throw new Error("job id is required");
+  }
+  const endpoint = action === "cancel" ? "cancel" : "pause";
+  const data = await jsonRequest(`${BASE}/api/project/render/${jobId}/${endpoint}`, {
+    method: "POST",
+  });
+  if (data.videoUrl) data.videoUrl = absoluteUrl(data.videoUrl);
+  return data;
+}
+
+export function cancelRender(jobId) {
+  return controlRender(jobId, "cancel");
+}
+
+export function pauseRender(jobId) {
+  return controlRender(jobId, "pause");
 }

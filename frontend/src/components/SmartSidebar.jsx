@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import {
+  enrichSceneMetadata,
+  autofillSceneMedia,
   generateProjectFromPrompt,
   initProject,
   setDurationSeconds,
-  setFormat,
   setVoiceModel,
 } from "../store/projectSlice";
 import { estimateSpeechDuration } from "../lib/speech";
@@ -14,6 +15,8 @@ const tabCopy = {
   elements: "Add overlays, titles, or graphics.",
   music: "Select and preview background tracks.",
 };
+
+const MANUAL_SCRIPT_CHAR_LIMIT = 4000;
 
 export default function SmartSidebar({ active }) {
   const dispatch = useDispatch();
@@ -25,13 +28,19 @@ export default function SmartSidebar({ active }) {
   const promptFromState = useSelector((state) => state.project.prompt);
   const voiceModel = useSelector((state) => state.project.voiceModel);
   const durationSeconds = useSelector((state) => state.project.durationSeconds);
-  const sceneCount = useSelector((state) => state.project.scenes.length);
   const [prompt, setPrompt] = useState(promptFromState || "");
   const [mode, setMode] = useState("generate"); // generate | manual
+  const [selectedFormat, setSelectedFormat] = useState(format);
+  const [manualError, setManualError] = useState("");
 
   useEffect(() => {
     setPrompt(promptFromState || "");
+    setManualError("");
   }, [promptFromState]);
+
+  useEffect(() => {
+    setSelectedFormat(format || "landscape");
+  }, [format]);
 
   const aspectOptions = useMemo(
       () => [
@@ -61,11 +70,8 @@ export default function SmartSidebar({ active }) {
     []
   );
 
-  const isAspectLocked = sceneCount > 0;
-
   const handleAspectChange = (value) => {
-    if (isAspectLocked) return;
-    dispatch(setFormat(value));
+    setSelectedFormat(value);
   };
 
   const handleVoiceChange = (value) => {
@@ -79,19 +85,27 @@ export default function SmartSidebar({ active }) {
   const handleSubmit = (event) => {
     event.preventDefault();
     const trimmed = prompt.trim();
+    setManualError("");
     if (!trimmed || status === "loading") return;
 
     if (mode === "generate") {
       dispatch(
         generateProjectFromPrompt({
           prompt: trimmed,
-          format,
+          format: selectedFormat,
           projectId,
           voiceModel,
           durationSeconds,
         })
       );
     } else {
+      if (trimmed.length > MANUAL_SCRIPT_CHAR_LIMIT) {
+        setManualError(
+          `Script is too long. Please limit to ${MANUAL_SCRIPT_CHAR_LIMIT} characters (~5 minutes of narration).`
+        );
+        return;
+      }
+
       const blocks = trimmed.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
       const segments = blocks.length > 0 ? blocks : [trimmed];
       let totalEstimate = 0;
@@ -114,7 +128,7 @@ export default function SmartSidebar({ active }) {
         initProject({
           id: projectId,
           title: project.title,
-          format,
+          format: selectedFormat,
           prompt: trimmed,
           narration: trimmed,
           keywords: [],
@@ -124,6 +138,12 @@ export default function SmartSidebar({ active }) {
           scenes,
         })
       );
+      dispatch(enrichSceneMetadata())
+        .unwrap()
+        .catch(() => null)
+        .finally(() => {
+          dispatch(autofillSceneMedia());
+        });
     }
   };
 
@@ -160,19 +180,16 @@ export default function SmartSidebar({ active }) {
           <h2 className="text-sm font-semibold text-gray-800">Aspect ratio</h2>
           <div className="mt-2 flex gap-2">
             {aspectOptions.map((option) => {
-              const isActive = format === option.value;
+              const isActive = selectedFormat === option.value;
               return (
                 <button
                   key={option.value}
                   type="button"
                   onClick={() => handleAspectChange(option.value)}
-                  disabled={isAspectLocked}
                   className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                    isAspectLocked
-                      ? "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
-                      : isActive
-                        ? "border-gray-900 bg-gray-900 text-white"
-                        : "border-gray-200 bg-white text-gray-600 hover:border-gray-400"
+                    isActive
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-200 bg-white text-gray-600 hover:border-gray-400"
                   }`}
                 >
                   {option.label}
@@ -187,7 +204,10 @@ export default function SmartSidebar({ active }) {
             <button
               key={key}
               type="button"
-              onClick={() => setMode(key)}
+              onClick={() => {
+                setMode(key);
+                setManualError("");
+              }}
               className={`rounded-lg px-3 py-1.5 transition ${
                 mode === key
                   ? "bg-slate-800 text-white"
@@ -203,7 +223,10 @@ export default function SmartSidebar({ active }) {
       <form onSubmit={handleSubmit} className="space-y-4 flex-1 flex flex-col">
         <textarea
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(e) => {
+            setPrompt(e.target.value);
+            setManualError("");
+          }}
           placeholder={
             mode === "generate"
               ? "Enter your topic or talking points. We’ll turn them into a script."
@@ -211,6 +234,9 @@ export default function SmartSidebar({ active }) {
           }
           className="w-full flex-1 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 shadow-inner focus:border-gray-400 focus:outline-none focus:ring-0 min-h-[10px]"
         />
+        {mode === "manual" && manualError && (
+          <p className="text-xs text-red-500">{manualError}</p>
+        )}
 
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-3">
@@ -257,7 +283,7 @@ export default function SmartSidebar({ active }) {
             ? isLoading
               ? "Generating…"
               : "Generate scenes"
-            : "Apply script"}
+            : "Generate script"}
         </button>
       </form>
 

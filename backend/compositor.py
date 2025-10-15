@@ -7,10 +7,9 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import requests
-import logging
 
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
@@ -21,6 +20,10 @@ TARGET_RESOLUTIONS = {
 
 class RenderError(RuntimeError):
     """Raised when ffmpeg returns a non-zero exit code."""
+
+
+class RenderCancelled(RuntimeError):
+    """Raised when rendering is cancelled mid-process."""
 
 
 def run_ffmpeg(args: List[str]) -> None:
@@ -69,7 +72,6 @@ def ensure_local_clip(url: str, cache_dir: Path) -> Path:
     if path.exists():
         return path
 
-    logging.getLogger(__name__).info("media_download url=%s", url)
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     path.write_bytes(resp.content)
@@ -164,10 +166,10 @@ def render_project(
     orientation: str,
     output_dir: Path,
     cache_dir: Path,
+    cancel_checker: Optional[Callable[[], bool]] = None,
 ) -> Path:
     """Render the final video by normalising scenes then concatenating."""
 
-    logger = logging.getLogger(__name__)
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -176,6 +178,8 @@ def render_project(
     scene_paths: List[Path] = []
     try:
         for idx, scene in enumerate(scenes):
+            if cancel_checker and cancel_checker():
+                raise RenderCancelled("Render cancelled before processing scene")
             duration = float(scene.get("audioDuration") or scene.get("duration") or 3.0)
             audio_path = Path(scene.get("audioPath"))
             if not audio_path.exists():
@@ -187,22 +191,13 @@ def render_project(
                 try:
                     media_path = ensure_local_clip(media_url, cache_dir)
                 except requests.RequestException as exc:
-                    print("Media download failed", media_url, exc)
-                    logger.warning("media_download_failed url=%s error=%s", media_url, exc)
-                else:
-                    logger.info("media_cached path=%s", media_path)
+                    raise RenderError(f"Media download failed for {media_url}") from exc
 
             dest = temp_dir / f"scene_{idx:03d}.mp4"
-            logger.info(
-                "scene_render start index=%s duration=%.2f media=%s audio=%s",
-                idx,
-                duration,
-                bool(media_path),
-                audio_path,
-            )
             _build_scene_video(media_path, audio_path, duration, orientation, dest)
             scene_paths.append(dest)
-            logger.info("scene_render complete index=%s output=%s", idx, dest)
+            if cancel_checker and cancel_checker():
+                raise RenderCancelled("Render cancelled during scene assembly")
 
         if not scene_paths:
             raise RenderError("No scene clips were generated")
@@ -248,6 +243,8 @@ def render_project(
             str(final_path),
         ])
 
+        if cancel_checker and cancel_checker():
+            raise RenderCancelled("Render cancelled before final assembly")
         run_ffmpeg(ffmpeg_args)
 
         return final_path

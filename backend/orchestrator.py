@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Optional
 
-from compositor import render_project
+from compositor import RenderCancelled, render_project
 from storage import (
     fetch_job_metadata,
     fetch_project_index,
@@ -35,6 +35,8 @@ class RenderOrchestrator:
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.jobs: Dict[str, Dict] = {}
         self.project_jobs: Dict[str, str] = self._load_index()
+        self.cancel_flags: Dict[str, threading.Event] = {}
+        self.cancel_targets: Dict[str, str] = {}
         self.lock = threading.Lock()
         self.logger = logging.getLogger(__name__)
 
@@ -67,11 +69,9 @@ class RenderOrchestrator:
         return job
 
     def get(self, job_id: str) -> Optional[Dict]:
-        self.logger.debug("render_get job=%s", job_id)
         with self.lock:
             job = self.jobs.get(job_id)
         if job:
-            self.logger.debug("render_get hit_memory job=%s status=%s", job_id, job.get("status"))
             return job
 
         job_path = self._job_path(job_id)
@@ -91,19 +91,47 @@ class RenderOrchestrator:
                     self.project_jobs[str(project_id)] = job_id
                     self._persist_index_locked()
             self._persist_job(job, sync_remote=False)
-            self.logger.info(
-                "render_get restored job=%s project=%s status=%s",
-                job_id,
-                project_id,
-                job.get("status"),
-            )
             return job
-        self.logger.warning("render_get miss job=%s", job_id)
         return None
+
+    def request_stop(self, job_id: str, final_status: str) -> Optional[Dict]:
+        if final_status not in {"cancelled", "paused"}:
+            raise ValueError(f"Unsupported stop status: {final_status}")
+
+        with self.lock:
+            job = self.jobs.get(job_id)
+        if not job:
+            job = self.get(job_id)
+        if not job:
+            return None
+
+        with self.lock:
+            current_status = job.get("status")
+            if current_status in {"completed", "failed", "cancelled", "paused"}:
+                return job
+
+            flag = self.cancel_flags.get(job_id)
+            if not flag:
+                flag = threading.Event()
+                self.cancel_flags[job_id] = flag
+            self.cancel_targets[job_id] = final_status
+            flag.set()
+
+            interim_status = "cancelling" if final_status == "cancelled" else "pausing"
+            job["status"] = interim_status
+            self.jobs[job_id] = job
+            self._persist_job(job)
+            return job
 
     # ------------------------------------------------------------------
 
     def _run_render(self, job_id: str, project_payload: Dict) -> None:
+        if self._is_cancelled(job_id):
+            final_status = self._cancel_target(job_id)
+            self._update(job_id, status=final_status)
+            self._clear_cancel(job_id)
+            return
+
         self._update(job_id, status="rendering", progress=5)
 
         try:
@@ -111,33 +139,20 @@ class RenderOrchestrator:
             orientation = project_payload.get("format", "landscape")
             voice_model = project_payload.get("voiceModel")
             project_id = project_payload.get("id") or uuid.uuid4().hex
-            self.logger.info(
-                "render_run_start job=%s project=%s scenes=%s",
-                job_id,
-                project_id,
-                len(scenes),
-            )
 
             prepared_scenes = []
             for scene in scenes:
+                if self._is_cancelled(job_id):
+                    final_status = self._cancel_target(job_id)
+                    self._update(job_id, status=final_status)
+                    self._clear_cancel(job_id)
+                    return
+
                 script_text = scene.get("script") or scene.get("text") or ""
-                self.logger.info(
-                    "render_scene_prepare job=%s scene=%s textLen=%s",
-                    job_id,
-                    scene.get("id"),
-                    len(script_text),
-                )
                 audio_path, audio_duration = ensure_tts_audio(
                     script_text,
                     scene.get("ttsVoice") or voice_model,
                     self.audio_cache,
-                )
-                self.logger.info(
-                    "render_scene_tts job=%s scene=%s audio=%.2fs path=%s",
-                    job_id,
-                    scene.get("id"),
-                    audio_duration,
-                    audio_path,
                 )
                 prepared_scenes.append({
                     **scene,
@@ -148,13 +163,31 @@ class RenderOrchestrator:
             output_dir = self.render_dir / project_id
             cache_dir = self.video_cache
 
-            final_path = render_project(
-                project_id=project_id,
-                scenes=prepared_scenes,
-                orientation=orientation,
-                output_dir=output_dir,
-                cache_dir=cache_dir,
-            )
+            if self._is_cancelled(job_id):
+                final_status = self._cancel_target(job_id)
+                self._update(job_id, status=final_status)
+                self._clear_cancel(job_id)
+                return
+
+            try:
+                final_path = render_project(
+                    project_id=project_id,
+                    scenes=prepared_scenes,
+                    orientation=orientation,
+                    output_dir=output_dir,
+                    cache_dir=cache_dir,
+                    cancel_checker=lambda: self._is_cancelled(job_id),
+                )
+            except RenderCancelled:
+                final_status = self._cancel_target(job_id)
+                self._update(job_id, status=final_status)
+                self._clear_cancel(job_id)
+                return
+            if self._is_cancelled(job_id):
+                final_status = self._cancel_target(job_id)
+                self._update(job_id, status=final_status)
+                self._clear_cancel(job_id)
+                return
             self.logger.info(
                 "render_project_complete job=%s project=%s output=%s",
                 job_id,
@@ -186,11 +219,6 @@ class RenderOrchestrator:
                 videoUrl=relative_url,
                 projectId=project_id,
             )
-            self.logger.info(
-                "render_run_complete job=%s project=%s",
-                job_id,
-                project_id,
-            )
         except Exception as exc:  # pylint: disable=broad-except
             self.logger.exception(
                 "render_run_error job=%s project=%s error=%s",
@@ -199,6 +227,8 @@ class RenderOrchestrator:
                 exc,
             )
             self._update(job_id, status="failed", progress=100, error=str(exc))
+        finally:
+            self._clear_cancel(job_id)
 
     def _update(self, job_id: str, **updates) -> None:
         with self.lock:
@@ -219,12 +249,6 @@ class RenderOrchestrator:
                 self.project_jobs[str(project_id)] = job["id"]
                 self._persist_index_locked()
             self._persist_job(job)
-            self.logger.debug(
-                "render_update job=%s project=%s updates=%s",
-                job_id,
-                project_id,
-                list(updates.keys()),
-            )
 
     def _persist_job(self, job: Dict, sync_remote: bool = True) -> None:
         job_path = self._job_path(job["id"])
@@ -235,6 +259,19 @@ class RenderOrchestrator:
 
     def _job_path(self, job_id: str) -> Path:
         return self.render_dir / f"{job_id}.json"
+
+    def _is_cancelled(self, job_id: str) -> bool:
+        flag = self.cancel_flags.get(job_id)
+        return flag.is_set() if flag else False
+
+    def _cancel_target(self, job_id: str) -> str:
+        return self.cancel_targets.get(job_id, "cancelled")
+
+    def _clear_cancel(self, job_id: str) -> None:
+        flag = self.cancel_flags.pop(job_id, None)
+        if flag:
+            flag.clear()
+        self.cancel_targets.pop(job_id, None)
 
     def _load_index(self) -> Dict[str, str]:
         mapping: Dict[str, str] = {}

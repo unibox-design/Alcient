@@ -16,10 +16,16 @@ export async function suggestClips({ sceneText = "", keywords = [], format = "la
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sceneText, keywords, format, page }),
     });
-    return ok ? (body.results || []) : [];
+    if (!ok) {
+      return { results: [], keywords: [] };
+    }
+    return {
+      results: body.results || [],
+      keywords: body.keywords || [],
+    };
   } catch (err) {
     console.warn("suggestClips fallback", err);
-    return []; // caller can handle empty
+    return { results: [], keywords: [] }; // caller can handle empty
   }
 }
 

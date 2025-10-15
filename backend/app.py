@@ -7,12 +7,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-import logging
-
-logging.basicConfig(level=logging.INFO)
 from werkzeug.utils import secure_filename
 
-from llm import generate_narration, generate_storyboard
+from llm import enrich_scene_metadata, generate_narration, generate_storyboard
 from orchestrator import get_orchestrator
 from pexels import search_pexels
 from tts import estimate_tts_duration
@@ -81,7 +78,6 @@ def _split_narration_into_chunks(narration: str, count: int):
 load_dotenv()
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
-app.logger.setLevel(logging.INFO)
 # File uploads land in backend/outputs/uploads for easy cleanup.
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "outputs", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
@@ -228,6 +224,91 @@ def api_media_suggest():
             results.append(clip_with_term)
 
     return jsonify({"results": results, "keywords": search_terms, "page": page})
+
+
+@app.route('/api/scenes/enrich', methods=['POST', 'OPTIONS'])
+def api_scenes_enrich():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        return response, 204
+
+    data = request.get_json(silent=True) or {}
+    raw_scenes = data.get("scenes")
+    if not isinstance(raw_scenes, list):
+        return jsonify({"error": "scenes array is required"}), 400
+
+    orientation = _map_aspect_to_orientation(data.get("format") or "landscape")
+    char_limit = int(os.getenv("MANUAL_SCRIPT_CHAR_LIMIT", "4000"))
+
+    processed = []
+    total_chars = 0
+    for idx, scene in enumerate(raw_scenes):
+        if not isinstance(scene, dict):
+            continue
+        text = str(scene.get("text") or "").strip()
+        if not text:
+            continue
+        scene_id = str(scene.get("id") or idx)
+        processed.append({"id": scene_id, "text": text})
+        total_chars += len(text)
+
+    if total_chars > char_limit:
+        return (
+            jsonify(
+                {
+                    "error": "Script is too long for enrichment.",
+                    "limit": char_limit,
+                    "length": total_chars,
+                }
+            ),
+            400,
+        )
+
+    if not processed:
+        return jsonify({"scenes": [], "source": "empty", "limit": char_limit})
+
+    try:
+        llm_items = enrich_scene_metadata(processed, orientation)
+        llm_map = {item["id"]: item for item in llm_items if isinstance(item, dict) and item.get("id")}
+        source = "llm"
+    except Exception as exc:
+        app.logger.warning("scene_enrich_llm_failed error=%s", exc)
+        llm_map = {}
+        source = "fallback"
+
+    response_items = []
+    fallback_used = source != "llm"
+
+    for scene in processed:
+        sid = scene["id"]
+        text = scene["text"]
+        info = llm_map.get(sid, {})
+        keywords = info.get("keywords")
+        if not isinstance(keywords, list):
+            keywords = []
+        keywords = [str(kw).strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+        if not keywords:
+            keywords = extract_keywords(text, limit=4)
+            fallback_used = True
+        image_prompt = info.get("imagePrompt")
+        if not isinstance(image_prompt, str) or not image_prompt.strip():
+            image_prompt = text[:180]
+            fallback_used = True
+        response_items.append(
+            {
+                "id": sid,
+                "keywords": keywords[:6],
+                "imagePrompt": image_prompt,
+            }
+        )
+
+    if source == "llm" and fallback_used:
+        source = "mixed"
+
+    return jsonify({"scenes": response_items, "source": source, "limit": char_limit})
 
 
 @app.route('/api/media/upload', methods=['POST'])
@@ -446,6 +527,38 @@ def api_project_render_status(job_id):
         job.get("status"),
         job.get("videoUrl"),
     )
+    return jsonify(job)
+
+
+@app.route('/api/project/render/<job_id>/cancel', methods=['POST', 'OPTIONS'])
+def api_project_render_cancel(job_id):
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        return response, 204
+
+    orchestrator = get_orchestrator(OUTPUT_BASE)
+    job = orchestrator.request_stop(job_id, "cancelled")
+    if not job:
+        return jsonify({"error": "job not found"}), 404
+    return jsonify(job)
+
+
+@app.route('/api/project/render/<job_id>/pause', methods=['POST', 'OPTIONS'])
+def api_project_render_pause(job_id):
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        return response, 204
+
+    orchestrator = get_orchestrator(OUTPUT_BASE)
+    job = orchestrator.request_stop(job_id, "paused")
+    if not job:
+        return jsonify({"error": "job not found"}), 404
     return jsonify(job)
 
 
