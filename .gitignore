@@ -17,3 +17,6 @@ frontend/.env
 .idea/
 .vscode/
 *.log
+
+# Internal planning
+ROADMAP.md

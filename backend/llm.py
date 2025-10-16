@@ -10,11 +10,32 @@ load_dotenv()
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+
+def _extract_usage_metadata(response) -> dict:
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return {}
+    usage_dict = {}
+    keys = ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens")
+    for key in keys:
+        value = None
+        if hasattr(usage, key):
+            value = getattr(usage, key)
+        elif isinstance(usage, dict):
+            value = usage.get(key)
+        if value is not None:
+            try:
+                usage_dict[key] = int(value)
+            except (TypeError, ValueError):
+                usage_dict[key] = value
+    return usage_dict
+
 def generate_narration(prompt: str):
     """Generate a narration and keywords from a text prompt."""
     try:
+        model = "gpt-4o-mini"
         response = openai.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=[
                 {"role": "system", "content": "You are a creative video scriptwriter."},
                 {"role": "user", "content": f"Write a short, engaging narration (30 seconds) for: {prompt}. After the narration, add ';' followed by a list of comma-separated keywords."}
@@ -30,7 +51,15 @@ def generate_narration(prompt: str):
         else:
             narration, keywords = text, []
 
-        return {"narration": narration.strip(), "keywords": keywords}
+        return {
+            "narration": narration.strip(),
+            "keywords": keywords,
+            "_usage": {
+                "provider": "openai",
+                "model": model,
+                "usage": _extract_usage_metadata(response),
+            },
+        }
 
     except Exception as e:
         print("Error in generate_narration:", e)
@@ -112,8 +141,9 @@ def generate_storyboard(
         target_words = max(120, int(target_seconds * 3.0))
         lower_words = int(target_words * 0.9)
         upper_words = int(target_words * 1.1)
+        model = "gpt-4o-mini"
         response = openai.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -183,6 +213,11 @@ def generate_storyboard(
             "scenes": scenes,
             "voiceModel": voice_model,
             "durationSeconds": target_seconds,
+            "_usage": {
+                "provider": "openai",
+                "model": model,
+                "usage": _extract_usage_metadata(response),
+            },
         }
     except Exception as e:
         print("Error in generate_storyboard:", e)
@@ -210,11 +245,12 @@ def enrich_scene_metadata(scenes, aspect: str = "landscape", max_keywords: int =
         )
 
     if not cleaned_scenes:
-        return []
+        return {"items": [], "_usage": None}
 
     try:
+        model = "gpt-4o-mini"
         response = openai.chat.completions.create(
-            model="gpt-4o",
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -282,4 +318,11 @@ def enrich_scene_metadata(scenes, aspect: str = "landscape", max_keywords: int =
                 "imagePrompt": image_prompt,
             }
         )
-    return results
+    return {
+        "items": results,
+        "_usage": {
+            "provider": "openai",
+            "model": model,
+            "usage": _extract_usage_metadata(response),
+        },
+    }

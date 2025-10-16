@@ -1,7 +1,9 @@
 # backend/app.py
+import math
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -9,7 +11,9 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
+from database import adjust_tokens, get_session, get_or_create_user, init_db, log_usage
 from llm import enrich_scene_metadata, generate_narration, generate_storyboard
+from model_registry import get_model
 from orchestrator import get_orchestrator
 from pexels import search_pexels
 from tts import estimate_tts_duration
@@ -83,6 +87,69 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "outputs", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
 OUTPUT_BASE = Path(os.path.dirname(__file__)) / "outputs"
 
+# Initialise database (idempotent)
+init_db()
+
+DEFAULT_USER_EMAIL = os.getenv("DEFAULT_USER_EMAIL", "demo@alcient.local")
+
+
+@contextmanager
+def _user_session():
+    email = (
+        request.headers.get("X-User-Email")
+        or request.args.get("userEmail")
+        or DEFAULT_USER_EMAIL
+    )
+    session = get_session()
+    try:
+        user = get_or_create_user(session, email=email, default_plan_id="starter")
+        yield session, user
+    finally:
+        session.close()
+
+
+def _attach_usage_headers(response, user):
+    response.headers["X-Tokens-Balance"] = str(user.tokens_balance)
+    if user.plan_id:
+        response.headers["X-Plan-Id"] = user.plan_id
+    return response
+
+
+def _log_usage_entry(session, user, action_type, usage_info, extra_payload=None):
+    if not usage_info:
+        return None
+    usage_data = usage_info.get("usage") or {}
+    tokens_input = (
+        usage_data.get("prompt_tokens")
+        or usage_data.get("input_tokens")
+        or 0
+    )
+    tokens_output = (
+        usage_data.get("completion_tokens")
+        or usage_data.get("output_tokens")
+        or 0
+    )
+    tokens_total = usage_data.get("total_tokens")
+    if not tokens_input and not tokens_output and tokens_total:
+        tokens_input = tokens_total
+
+    payload = dict(extra_payload or {})
+    for key, value in usage_data.items():
+        payload.setdefault(key, value)
+
+    entry = log_usage(
+        session,
+        user=user,
+        action_type=action_type,
+        provider=usage_info.get("provider", "unknown"),
+        model=usage_info.get("model", "unknown"),
+        tokens_input=tokens_input,
+        tokens_output=tokens_output,
+        payload=payload,
+    )
+    session.refresh(user)
+    return entry
+
 
 @app.after_request
 def apply_cors_headers(response):
@@ -113,13 +180,47 @@ def _coerce_positive_int(value, default=1):
 
 @app.route("/narration", methods=["POST"])
 def narration():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     prompt = data.get("prompt", "")
     if not prompt.strip():
         return jsonify({"error": "Prompt is required"}), 400
 
-    result = generate_narration(prompt)
-    return jsonify(result)
+    with _user_session() as (session, user):
+        result = generate_narration(prompt)
+        usage_info = result.pop("_usage", None)
+        if result.get("error"):
+            response = jsonify(result)
+            return _attach_usage_headers(response, user), 500
+
+        model_info = get_model("openai-gpt4o-mini")
+        usage_entry = _log_usage_entry(
+            session,
+            user,
+            "narration.generate",
+            usage_info,
+            extra_payload={
+                "prompt_length": len(prompt or ""),
+                "model_id": model_info.id,
+            },
+        )
+
+        usage_stats = (usage_info or {}).get("usage", {})
+        total_tokens = usage_stats.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = (usage_stats.get("prompt_tokens", 0) + usage_stats.get("completion_tokens", 0))
+        platform_tokens = math.ceil(max(total_tokens, 0) * model_info.cost_multiplier / 1000) if total_tokens else 0
+        if platform_tokens:
+            reference = usage_entry.id if usage_entry else "narration"
+            adjust_tokens(
+                session,
+                user=user,
+                delta=-platform_tokens,
+                reason="platform:llm",
+                reference=reference,
+            )
+            session.refresh(user)
+        response = jsonify(result)
+        return _attach_usage_headers(response, user)
 
 
 # Pexels Route---------------------
@@ -270,45 +371,81 @@ def api_scenes_enrich():
     if not processed:
         return jsonify({"scenes": [], "source": "empty", "limit": char_limit})
 
-    try:
-        llm_items = enrich_scene_metadata(processed, orientation)
-        llm_map = {item["id"]: item for item in llm_items if isinstance(item, dict) and item.get("id")}
-        source = "llm"
-    except Exception as exc:
-        app.logger.warning("scene_enrich_llm_failed error=%s", exc)
-        llm_map = {}
-        source = "fallback"
+    with _user_session() as (session, user):
+        usage_info = None
+        model_info = get_model("openai-gpt4o-mini")
+        try:
+            llm_result = enrich_scene_metadata(processed, orientation)
+            if isinstance(llm_result, dict):
+                llm_items = llm_result.get("items", [])
+                usage_info = llm_result.get("_usage")
+            else:
+                llm_items = llm_result
+            llm_map = {item["id"]: item for item in llm_items if isinstance(item, dict) and item.get("id")}
+            source = "llm"
+        except Exception as exc:
+            app.logger.warning("scene_enrich_llm_failed error=%s", exc)
+            llm_map = {}
+            source = "fallback"
 
-    response_items = []
-    fallback_used = source != "llm"
+        response_items = []
+        fallback_used = source != "llm"
 
-    for scene in processed:
-        sid = scene["id"]
-        text = scene["text"]
-        info = llm_map.get(sid, {})
-        keywords = info.get("keywords")
-        if not isinstance(keywords, list):
-            keywords = []
-        keywords = [str(kw).strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
-        if not keywords:
-            keywords = extract_keywords(text, limit=4)
-            fallback_used = True
-        image_prompt = info.get("imagePrompt")
-        if not isinstance(image_prompt, str) or not image_prompt.strip():
-            image_prompt = text[:180]
-            fallback_used = True
-        response_items.append(
-            {
-                "id": sid,
-                "keywords": keywords[:6],
-                "imagePrompt": image_prompt,
-            }
-        )
+        for scene in processed:
+            sid = scene["id"]
+            text = scene["text"]
+            info = llm_map.get(sid, {})
+            keywords = info.get("keywords")
+            if not isinstance(keywords, list):
+                keywords = []
+            keywords = [str(kw).strip() for kw in keywords if isinstance(kw, str) and kw.strip()]
+            if not keywords:
+                keywords = extract_keywords(text, limit=4)
+                fallback_used = True
+            image_prompt = info.get("imagePrompt")
+            if not isinstance(image_prompt, str) or not image_prompt.strip():
+                image_prompt = text[:180]
+                fallback_used = True
+            response_items.append(
+                {
+                    "id": sid,
+                    "keywords": keywords[:6],
+                    "imagePrompt": image_prompt,
+                }
+            )
 
-    if source == "llm" and fallback_used:
-        source = "mixed"
+        if usage_info:
+            usage_entry = _log_usage_entry(
+                session,
+                user,
+                "scene.enrich",
+                usage_info,
+                extra_payload={
+                    "scene_count": len(processed),
+                    "model_id": model_info.id,
+                },
+            )
+            usage_stats = usage_info.get("usage", {})
+            total_tokens = usage_stats.get("total_tokens")
+            if total_tokens is None:
+                total_tokens = (usage_stats.get("prompt_tokens", 0) + usage_stats.get("completion_tokens", 0))
+            platform_tokens = math.ceil(max(total_tokens, 0) * model_info.cost_multiplier / 1000) if total_tokens else 0
+            if platform_tokens:
+                reference = usage_entry.id if usage_entry else "scene.enrich"
+                adjust_tokens(
+                    session,
+                    user=user,
+                    delta=-platform_tokens,
+                    reason="platform:llm",
+                    reference=reference,
+                )
+                session.refresh(user)
 
-    return jsonify({"scenes": response_items, "source": source, "limit": char_limit})
+        if source == "llm" and fallback_used:
+            source = "mixed"
+
+        response = jsonify({"scenes": response_items, "source": source, "limit": char_limit})
+        return _attach_usage_headers(response, user)
 
 
 @app.route('/api/media/upload', methods=['POST'])
@@ -386,86 +523,119 @@ def api_project_generate():
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
 
-    storyboard = generate_storyboard(
-        prompt,
-        orientation,
-        voice_model=voice_model,
-        target_seconds=duration_seconds,
-        scene_hint=scene_hint,
-    )
-    if storyboard.get("error"):
-        return jsonify({"error": storyboard["error"]}), 500
+    with _user_session() as (session, user):
+        storyboard = generate_storyboard(
+            prompt,
+            orientation,
+            voice_model=voice_model,
+            target_seconds=duration_seconds,
+            scene_hint=scene_hint,
+        )
+        usage_info = storyboard.pop("_usage", None)
+        if storyboard.get("error"):
+            response = jsonify({"error": storyboard["error"]})
+            return _attach_usage_headers(response, user), 500
 
-    project_id = requested_project_id or uuid.uuid4().hex
-    title = storyboard.get("title") or "Untitled Project"
-    narration = _normalize_narration_text(storyboard.get("narration"))
-    scenes = storyboard.get("scenes") or []
-    voice_model = storyboard.get("voiceModel") or voice_model
-    duration_seconds = int(storyboard.get("durationSeconds") or duration_seconds)
-    narration_chunks = _split_narration_into_chunks(narration, len(scenes)) if scenes else []
+        model_info = get_model("openai-gpt4o-mini")
+        usage_entry = _log_usage_entry(
+            session,
+            user,
+            "storyboard.generate",
+            usage_info,
+            extra_payload={
+                "prompt_length": len(prompt),
+                "requested_duration_seconds": duration_seconds,
+                "model_id": model_info.id,
+            },
+        )
 
-    prepared_scenes = []
-    all_keywords = []
-    total_estimated_runtime = 0.0
-    max_scene_duration = max(
-        18,
-        min(45, int(duration_seconds / max(len(scenes), 1)) + 10)
-    )
-    for index, scene in enumerate(scenes):
-        text = (scene.get("text") or "").strip()
-        keywords = scene.get("keywords") or extract_keywords(text, limit=3)
-        # ensure keywords unique order preserved
-        deduped_keywords = list(dict.fromkeys([kw for kw in keywords if isinstance(kw, str) and kw.strip()]))
-        if not deduped_keywords and text:
-            deduped_keywords = extract_keywords(text, limit=3)
+        usage_stats = (usage_info or {}).get("usage", {})
+        total_tokens = usage_stats.get("total_tokens")
+        if total_tokens is None:
+            total_tokens = (usage_stats.get("prompt_tokens", 0) + usage_stats.get("completion_tokens", 0))
+        platform_tokens = math.ceil(max(total_tokens, 0) * model_info.cost_multiplier / 1000) if total_tokens else 0
+        if platform_tokens:
+            reference = usage_entry.id if usage_entry else "storyboard"
+            adjust_tokens(
+                session,
+                user=user,
+                delta=-platform_tokens,
+                reason="platform:llm",
+                reference=reference,
+            )
+            session.refresh(user)
 
-        media = None
-        for kw in deduped_keywords:
-            try:
-                clips = search_pexels(kw, orientation=orientation, per_page=3)
-            except Exception as exc:
-                print("generate project search error:", kw, exc)
-                clips = []
-            if clips:
-                media = dict(clips[0])
-                media["keyword"] = kw
-                break
+        project_id = requested_project_id or uuid.uuid4().hex
+        title = storyboard.get("title") or "Untitled Project"
+        narration = _normalize_narration_text(storyboard.get("narration"))
+        scenes = storyboard.get("scenes") or []
+        voice_model = storyboard.get("voiceModel") or voice_model
+        duration_seconds = int(storyboard.get("durationSeconds") or duration_seconds)
+        narration_chunks = _split_narration_into_chunks(narration, len(scenes)) if scenes else []
 
-        script_text = narration_chunks[index] if index < len(narration_chunks) else ""
-        visual_text = scene.get("text") or text
-        final_script = script_text or text
-        estimated_duration = estimate_tts_duration(final_script, voice_model)
-        total_estimated_runtime += estimated_duration
-        scene_duration = max(3, min(int(round(estimated_duration)), max_scene_duration))
+        prepared_scenes = []
+        all_keywords = []
+        total_estimated_runtime = 0.0
+        max_scene_duration = max(
+            18,
+            min(45, int(duration_seconds / max(len(scenes), 1)) + 10)
+        )
+        for index, scene in enumerate(scenes):
+            text = (scene.get("text") or "").strip()
+            keywords = scene.get("keywords") or extract_keywords(text, limit=3)
+            # ensure keywords unique order preserved
+            deduped_keywords = list(dict.fromkeys([kw for kw in keywords if isinstance(kw, str) and kw.strip()]))
+            if not deduped_keywords and text:
+                deduped_keywords = extract_keywords(text, limit=3)
 
-        prepared_scenes.append({
-            "text": final_script,
-            "duration": scene_duration,
-            "audioDuration": round(estimated_duration, 2),
-            "ttsVoice": scene.get("ttsVoice") or voice_model,
-            "keywords": deduped_keywords,
-            "media": media,
-            "order": index,
-            "visual": visual_text,
-            "script": final_script,
-        })
-        all_keywords.extend(deduped_keywords)
+            media = None
+            for kw in deduped_keywords:
+                try:
+                    clips = search_pexels(kw, orientation=orientation, per_page=3)
+                except Exception as exc:
+                    print("generate project search error:", kw, exc)
+                    clips = []
+                if clips:
+                    media = dict(clips[0])
+                    media["keyword"] = kw
+                    break
 
-    payload = {
-        "project": {
-            "id": project_id,
-            "prompt": prompt,
-            "title": title,
-            "format": orientation,
-            "narration": narration,
-            "keywords": list(dict.fromkeys(all_keywords)),
-            "scenes": prepared_scenes,
-            "voiceModel": voice_model,
-            "durationSeconds": duration_seconds,
-            "runtimeSeconds": round(total_estimated_runtime, 2) if total_estimated_runtime else duration_seconds,
+            script_text = narration_chunks[index] if index < len(narration_chunks) else ""
+            visual_text = scene.get("text") or text
+            final_script = script_text or text
+            estimated_duration = estimate_tts_duration(final_script, voice_model)
+            total_estimated_runtime += estimated_duration
+            scene_duration = max(3, min(int(round(estimated_duration)), max_scene_duration))
+
+            prepared_scenes.append({
+                "text": final_script,
+                "duration": scene_duration,
+                "audioDuration": round(estimated_duration, 2),
+                "ttsVoice": scene.get("ttsVoice") or voice_model,
+                "keywords": deduped_keywords,
+                "media": media,
+                "order": index,
+                "visual": visual_text,
+                "script": final_script,
+            })
+            all_keywords.extend(deduped_keywords)
+
+        payload = {
+            "project": {
+                "id": project_id,
+                "prompt": prompt,
+                "title": title,
+                "format": orientation,
+                "narration": narration,
+                "keywords": list(dict.fromkeys(all_keywords)),
+                "scenes": prepared_scenes,
+                "voiceModel": voice_model,
+                "durationSeconds": duration_seconds,
+                "runtimeSeconds": round(total_estimated_runtime, 2) if total_estimated_runtime else duration_seconds,
+            }
         }
-    }
-    return jsonify(payload)
+        response = jsonify(payload)
+        return _attach_usage_headers(response, user)
 
 
 @app.route('/api/project/render', methods=['POST', 'OPTIONS'])
