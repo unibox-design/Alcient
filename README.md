@@ -23,13 +23,16 @@ Create a `.env` file in both `backend/` and `frontend/` (if needed) with the fol
 OPENAI_API_KEY=sk-your-key
 PEXELS_API_KEY=your-pexels-key
 VITE_BACKEND=http://localhost:5000
+# Allowlisted origins for the browser app (comma separated)
+FRONTEND_ORIGINS=http://localhost:5173
 # Optional billing configuration
 # STRIPE_API_KEY=sk_live_or_test_key
 # STRIPE_PLAN_PRICE_MAP={"starter":"price_123","builder":"price_456"}
 # STRIPE_TOPUP_RETURN_URL=https://your-app.example.com/billing
 ```
 
-The backend reads `OPENAI_API_KEY` and `PEXELS_API_KEY`; the frontend uses `VITE_BACKEND` to locate the API server.
+The backend reads `OPENAI_API_KEY`, `PEXELS_API_KEY`, and `FRONTEND_ORIGINS`; the
+frontend uses `VITE_BACKEND` to locate the API server.
 
 If you want to exercise the Stripe checkout flows locally, export `STRIPE_API_KEY`
 and provide a JSON mapping in `STRIPE_PLAN_PRICE_MAP` that pairs plan IDs with the

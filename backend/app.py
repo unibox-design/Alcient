@@ -99,7 +99,11 @@ def _split_narration_into_chunks(narration: str, count: int):
 
 load_dotenv()
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+_frontend_origins = os.getenv("FRONTEND_ORIGINS", "http://localhost:5173")
+ALLOWED_ORIGINS = [origin.strip() for origin in _frontend_origins.split(",") if origin.strip()]
+
+CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 # File uploads land in backend/outputs/uploads for easy cleanup.
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "outputs", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
