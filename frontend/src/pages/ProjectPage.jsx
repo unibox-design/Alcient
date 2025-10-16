@@ -43,12 +43,14 @@ export default function ProjectPage() {
           <img src="/alcient.svg" alt="Alcient" className="h-8 w-auto" />
           ALCIENT
         </Link>
-        <Link
-          to="/"
-          className="text-sm text-gray-500 hover:text-gray-700 transition"
-        >
-          ← Back to Templates
-        </Link>
+        <div className="flex items-center gap-4">
+          <Link to="/billing" className="text-sm text-gray-500 hover:text-gray-700 transition">
+            Usage & Billing
+          </Link>
+          <Link to="/" className="text-sm text-gray-500 hover:text-gray-700 transition">
+            ← Back to Templates
+          </Link>
+        </div>
       </header>
 
       {/* Main workspace grid */}

@@ -1,5 +1,5 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import TemplateCard from "../components/TemplateCard";
 
 const templates = [
@@ -34,6 +34,11 @@ export default function LandingPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col items-center justify-center px-6">
+      <div className="w-full max-w-6xl flex justify-end mb-6">
+        <Link to="/billing" className="text-sm text-gray-500 hover:text-gray-700 transition">
+          Usage & Billing
+        </Link>
+      </div>
       <h1 className="text-4xl font-bold mb-12 text-gray-800">
         Alcient Video Studio
       </h1>

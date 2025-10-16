@@ -9,6 +9,7 @@ import {
   setSceneMedia,
   updateSceneText,
   triggerRender,
+  estimateProjectCost,
 } from "../store/projectSlice";
 import ReplaceClipModal from "./ReplaceClipModal";
 
@@ -25,6 +26,8 @@ export default function MainEditor({ active }) {
   const renderState = useSelector((state) => state.project.render);
   const mediaSuggest = useSelector((state) => state.project.mediaSuggest);
   const sceneEnrich = useSelector((state) => state.project.sceneEnrich);
+  const costEstimate = useSelector((state) => state.project.costEstimate);
+  const tokenBalance = useSelector((state) => state.project.tokenBalance);
   const isDirty = useSelector((state) => state.project.isDirty);
   const [replaceSceneId, setReplaceSceneId] = useState(null);
   const [hoveredSceneId, setHoveredSceneId] = useState(null);
@@ -59,11 +62,56 @@ export default function MainEditor({ active }) {
         ? "Regenerate video"
         : "Generate video";
 
+  const costEstimateText = useMemo(() => {
+    if (costEstimate.status === "loading") {
+      return "Estimating token cost…";
+    }
+    if (costEstimate.status === "failed") {
+      return costEstimate.error || "Could not estimate cost.";
+    }
+    const estimate = costEstimate.data;
+    if (!estimate || !scenes.length) {
+      return scenes.length ? "Cost estimate unavailable." : "Add scenes to preview the token cost.";
+    }
+    const total = estimate.totalTokens ?? 0;
+    const tts = estimate.ttsTokens ?? 0;
+    const video = estimate.videoTokens ?? 0;
+    const balance =
+      typeof tokenBalance === "number"
+        ? tokenBalance
+        : typeof costEstimate.tokenBalance === "number"
+          ? costEstimate.tokenBalance
+          : null;
+    const balanceAfter = typeof balance === "number" ? balance - total : null;
+    const parts = [`Estimated cost: ${total} tokens`, `TTS ${tts} · Video ${video}`];
+    if (typeof balanceAfter === "number") {
+      parts.push(`Balance after render ~ ${balanceAfter}`);
+    }
+    return parts.join(" · ");
+  }, [costEstimate, scenes.length, tokenBalance]);
+
+  const costEstimateModels = useMemo(() => {
+    const models = costEstimate.data?.models;
+    if (!models) return null;
+    const ttsModel = models.tts ? models.tts.humanName || models.tts.id : null;
+    const videoModel = models.video ? models.video.humanName || models.video.id : null;
+    if (!ttsModel && !videoModel) return null;
+    return { tts: ttsModel, video: videoModel };
+  }, [costEstimate]);
+
   useEffect(() => {
     if (renderState.autoTrigger && scenes.length > 0 && !isRendering) {
       dispatch(triggerRender());
     }
   }, [renderState.autoTrigger, scenes.length, isRendering, dispatch]);
+
+  useEffect(() => {
+    if (costEstimate.status !== "stale") return undefined;
+    const timer = setTimeout(() => {
+      dispatch(estimateProjectCost());
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [dispatch, costEstimate.status]);
 
   const handleAddScene = () => {
     dispatch(
@@ -214,24 +262,32 @@ export default function MainEditor({ active }) {
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleRegenerate}
-            disabled={generateButtonDisabled}
-            className={`px-3 py-1.5 text-sm rounded-lg transition ${
-              generateButtonDisabled
-                ? "bg-gray-200 text-gray-400 cursor-not-allowed"
-                : "bg-gray-900 text-white hover:bg-gray-700"
-            }`}
-          >
-            {buttonLabel}
-          </button>
-          <button
-            onClick={handleAddScene}
-            className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 transition"
-          >
-            + Add Scene
-          </button>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRegenerate}
+              disabled={generateButtonDisabled}
+              className={`px-3 py-1.5 text-sm rounded-lg transition ${
+                generateButtonDisabled
+                  ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                  : "bg-gray-900 text-white hover:bg-gray-700"
+              }`}
+            >
+              {buttonLabel}
+            </button>
+            <button
+              onClick={handleAddScene}
+              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 transition"
+            >
+              + Add Scene
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 text-right max-w-xs">{costEstimateText}</p>
+          {costEstimateModels && (
+            <p className="text-[11px] text-gray-400 text-right">
+              Models: {costEstimateModels.tts || "—"} voice · {costEstimateModels.video || "—"} render
+            </p>
+          )}
         </div>
       </div>
 

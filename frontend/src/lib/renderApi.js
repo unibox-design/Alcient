@@ -9,6 +9,7 @@ function absoluteUrl(path) {
 async function jsonRequest(url, options = {}) {
   const res = await fetch(url, {
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     ...options,
   });
   const body = await res.json();
@@ -60,4 +61,25 @@ export function cancelRender(jobId) {
 
 export function pauseRender(jobId) {
   return controlRender(jobId, "pause");
+}
+
+export async function saveProject(project) {
+  const body = await jsonRequest(`${BASE}/api/project/save`, {
+    method: "POST",
+    body: JSON.stringify({ project }),
+  });
+  return body?.project;
+}
+
+export async function fetchProject(projectId) {
+  const body = await jsonRequest(`${BASE}/api/project/${projectId}`);
+  return body?.project;
+}
+
+export async function estimateRenderCost(project) {
+  const body = await jsonRequest(`${BASE}/api/project/estimate-cost`, {
+    method: "POST",
+    body: JSON.stringify({ project }),
+  });
+  return body;
 }

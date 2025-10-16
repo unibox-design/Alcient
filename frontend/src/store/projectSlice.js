@@ -6,6 +6,8 @@ import {
   fetchRenderStatus as fetchRenderStatusApi,
   cancelRender as cancelRenderApi,
   pauseRender as pauseRenderApi,
+  saveProject as saveProjectApi,
+  estimateRenderCost as estimateRenderCostApi,
 } from "../lib/renderApi";
 import { suggestClips } from "../lib/mediaApi";
 import { enrichScenesMetadata } from "../lib/sceneApi";
@@ -32,6 +34,9 @@ const markDirty = (state) => {
   }
   state.render.autoTrigger = false;
   state.render.progress = 0;
+  if (state.costEstimate) {
+    state.costEstimate.status = "stale";
+  }
 };
 
 const CAPTION_WORDS_PER_SEGMENT = 6;
@@ -63,6 +68,29 @@ const buildCaptionSegments = (text, durationSeconds) => {
   return segments;
 };
 
+const buildProjectPayload = (project) => ({
+  id: project.id,
+  title: project.title,
+  format: project.format,
+  voiceModel: project.voiceModel,
+  narration: project.narration,
+  durationSeconds: project.durationSeconds,
+  runtimeSeconds: project.runtimeSeconds,
+  captionsEnabled: project.captionsEnabled,
+  captionTemplate: project.captionTemplate,
+  scenes: project.scenes.map((scene) => ({
+    id: scene.id,
+    text: scene.text,
+    script: scene.script,
+    media: scene.media,
+    keywords: scene.keywords,
+    ttsVoice: scene.ttsVoice,
+    order: scene.order,
+    audioDuration: scene.audioDuration,
+    captions: scene.captions,
+  })),
+});
+
 export const generateProjectFromPrompt = createAsyncThunk(
   "project/generateFromPrompt",
   async ({ prompt, format, projectId, voiceModel, durationSeconds }, { rejectWithValue }) => {
@@ -89,34 +117,32 @@ export const triggerRender = createAsyncThunk(
     try {
       const state = getState();
       const project = state.project;
-      const payload = {
-        id: project.id,
-        title: project.title,
-        format: project.format,
-        voiceModel: project.voiceModel,
-        narration: project.narration,
-        durationSeconds: project.durationSeconds,
-        captionsEnabled: project.captionsEnabled,
-        captionTemplate: project.captionTemplate,
-        scenes: project.scenes.map((scene) => ({
-          id: scene.id,
-          text: scene.text,
-          script: scene.script,
-          media: scene.media,
-          keywords: scene.keywords,
-          ttsVoice: scene.ttsVoice,
-          order: scene.order,
-          audioDuration: scene.audioDuration,
-          captions: scene.captions,
-        })),
-      };
+      const payload = buildProjectPayload(project);
       if (!payload.scenes.length) {
         throw new Error("Add at least one scene before rendering");
       }
+      await saveProjectApi(payload);
       const job = await triggerRenderApi(payload);
       return job;
     } catch (err) {
       return rejectWithValue({ error: err.message || "Render failed" });
+    }
+  }
+);
+
+export const estimateProjectCost = createAsyncThunk(
+  "project/estimateProjectCost",
+  async (_, { getState, rejectWithValue }) => {
+    try {
+      const state = getState().project;
+      if (!state.scenes.length) {
+        return { estimate: null, tokenBalance: state.tokenBalance ?? null };
+      }
+      const payload = buildProjectPayload(state);
+      const result = await estimateRenderCostApi(payload);
+      return result;
+    } catch (err) {
+      return rejectWithValue({ error: err.message || "Failed to estimate render cost" });
     }
   }
 );
@@ -263,7 +289,7 @@ export const autofillSceneMedia = createAsyncThunk(
  * }
  */
 
-const initialState = {
+const createInitialState = () => ({
   id: null,
   title: "",
   format: "landscape",
@@ -278,6 +304,7 @@ const initialState = {
   status: "idle",
   error: null,
   isDirty: false,
+  tokenBalance: null,
   captionsEnabled: true,
   captionTemplate: DEFAULT_CAPTION_TEMPLATE,
   render: {
@@ -297,7 +324,16 @@ const initialState = {
     error: null,
     source: null,
   },
-};
+  costEstimate: {
+    status: "idle",
+    error: null,
+    data: null,
+    tokenBalance: null,
+    updatedAt: null,
+  },
+});
+
+const initialState = createInitialState();
 
 const projectSlice = createSlice({
   name: "project",
@@ -388,6 +424,13 @@ const projectSlice = createSlice({
         error: null,
         source: null,
       };
+      state.costEstimate = {
+        status: "stale",
+        error: null,
+        data: null,
+        tokenBalance: state.tokenBalance,
+        updatedAt: null,
+      };
     },
     addScene(state, action) {
       const { text = "New scene", duration } = action.payload || {};
@@ -468,9 +511,11 @@ const projectSlice = createSlice({
     },
     setFormat(state, action) {
       state.format = action.payload || "landscape";
+      markDirty(state);
     },
     setVoiceModel(state, action) {
       state.voiceModel = action.payload || state.voiceModel;
+      markDirty(state);
     },
     setDurationSeconds(state, action) {
       const raw = action.payload;
@@ -478,6 +523,7 @@ const projectSlice = createSlice({
       const numeric = typeof raw === "number" ? raw : parseInt(raw, 10);
       if (!Number.isNaN(numeric) && numeric > 0) {
         state.durationSeconds = numeric;
+        markDirty(state);
       }
     },
     toggleCaptions(state, action) {
@@ -492,7 +538,7 @@ const projectSlice = createSlice({
       markDirty(state);
     },
     resetProject(state) {
-      Object.assign(state, initialState);
+      Object.assign(state, createInitialState());
     },
   },
   extraReducers: (builder) => {
@@ -579,6 +625,13 @@ const projectSlice = createSlice({
           status: "idle",
           error: null,
           source: null,
+        };
+        state.costEstimate = {
+          status: "stale",
+          error: null,
+          data: null,
+          tokenBalance: state.tokenBalance,
+          updatedAt: null,
         };
       })
       .addCase(generateProjectFromPrompt.rejected, (state, action) => {
@@ -686,6 +739,29 @@ const projectSlice = createSlice({
       .addCase(pauseRenderJob.rejected, (state, action) => {
         state.render.error =
           action.payload?.error || action.error?.message || "Failed to pause render";
+      })
+      .addCase(estimateProjectCost.pending, (state) => {
+        state.costEstimate.status = "loading";
+        state.costEstimate.error = null;
+      })
+      .addCase(estimateProjectCost.fulfilled, (state, action) => {
+        const payload = action.payload || {};
+        state.costEstimate.data = payload.estimate || null;
+        state.costEstimate.tokenBalance =
+          typeof payload.tokenBalance === "number"
+            ? payload.tokenBalance
+            : state.costEstimate.tokenBalance;
+        state.costEstimate.status = payload.estimate ? "succeeded" : "idle";
+        state.costEstimate.error = null;
+        state.costEstimate.updatedAt = payload.estimate ? Date.now() : null;
+        if (typeof payload.tokenBalance === "number") {
+          state.tokenBalance = payload.tokenBalance;
+        }
+      })
+      .addCase(estimateProjectCost.rejected, (state, action) => {
+        state.costEstimate.status = "failed";
+        state.costEstimate.error =
+          action.payload?.error || action.error?.message || "Failed to estimate render cost";
       })
       .addCase(enrichSceneMetadata.pending, (state) => {
         state.sceneEnrich.status = "loading";
