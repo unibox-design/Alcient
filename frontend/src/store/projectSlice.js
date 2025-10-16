@@ -9,6 +9,7 @@ import {
 } from "../lib/renderApi";
 import { suggestClips } from "../lib/mediaApi";
 import { enrichScenesMetadata } from "../lib/sceneApi";
+import { DEFAULT_CAPTION_TEMPLATE } from "../lib/captions";
 
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
@@ -31,6 +32,35 @@ const markDirty = (state) => {
   }
   state.render.autoTrigger = false;
   state.render.progress = 0;
+};
+
+const CAPTION_WORDS_PER_SEGMENT = 6;
+
+const buildCaptionSegments = (text, durationSeconds) => {
+  const cleanText = (text || "").replace(/\s+/g, " ").trim();
+  if (!cleanText) return [];
+  const words = cleanText.split(" ");
+  const segmentsNeeded = Math.max(1, Math.ceil(words.length / CAPTION_WORDS_PER_SEGMENT));
+  const duration = Number.isFinite(Number(durationSeconds)) && durationSeconds > 0 ? durationSeconds : segmentsNeeded * 2;
+  const segmentDuration = duration / segmentsNeeded;
+  const segments = [];
+  for (let i = 0; i < segmentsNeeded; i += 1) {
+    const startIndex = i * CAPTION_WORDS_PER_SEGMENT;
+    const segmentWords = words.slice(startIndex, startIndex + CAPTION_WORDS_PER_SEGMENT);
+    if (!segmentWords.length) continue;
+    const start = Math.round(segmentDuration * i * 100) / 100;
+    const end =
+      i === segmentsNeeded - 1
+        ? Math.round(duration * 100) / 100
+        : Math.round(segmentDuration * (i + 1) * 100) / 100;
+    segments.push({
+      id: `caption-${i}`,
+      text: segmentWords.join(" "),
+      start,
+      end,
+    });
+  }
+  return segments;
 };
 
 export const generateProjectFromPrompt = createAsyncThunk(
@@ -66,6 +96,8 @@ export const triggerRender = createAsyncThunk(
         voiceModel: project.voiceModel,
         narration: project.narration,
         durationSeconds: project.durationSeconds,
+        captionsEnabled: project.captionsEnabled,
+        captionTemplate: project.captionTemplate,
         scenes: project.scenes.map((scene) => ({
           id: scene.id,
           text: scene.text,
@@ -75,6 +107,7 @@ export const triggerRender = createAsyncThunk(
           ttsVoice: scene.ttsVoice,
           order: scene.order,
           audioDuration: scene.audioDuration,
+          captions: scene.captions,
         })),
       };
       if (!payload.scenes.length) {
@@ -245,6 +278,8 @@ const initialState = {
   status: "idle",
   error: null,
   isDirty: false,
+  captionsEnabled: true,
+  captionTemplate: DEFAULT_CAPTION_TEMPLATE,
   render: {
     status: "idle",
     jobId: null,
@@ -279,6 +314,8 @@ const projectSlice = createSlice({
         keywords,
         voiceModel,
         durationSeconds,
+        captionsEnabled,
+        captionTemplate,
       } = action.payload || {};
       state.id = id || state.id;
       state.title = title || state.title;
@@ -287,6 +324,12 @@ const projectSlice = createSlice({
       state.narration = normalizeNarration(narration);
       state.keywords = keywords || [];
       state.voiceModel = voiceModel || state.voiceModel;
+      if (typeof captionsEnabled === "boolean") {
+        state.captionsEnabled = captionsEnabled;
+      }
+      if (captionTemplate) {
+        state.captionTemplate = captionTemplate;
+      }
       if (durationSeconds != null) {
         const parsed =
           typeof durationSeconds === "number"
@@ -318,6 +361,7 @@ const projectSlice = createSlice({
           visual: s.visual ?? s.description ?? null,
           keywords: s.keywords || [],
           imagePrompt: s.imagePrompt ?? null,
+          captions: buildCaptionSegments(textValue, s.audioDuration ?? null),
           audioDuration: Math.round(audioEstimate * 100) / 100,
           duration:
             typeof s.duration === "number"
@@ -363,6 +407,7 @@ const projectSlice = createSlice({
         media: null,
         keywords: [],
         imagePrompt: null,
+        captions: buildCaptionSegments(text, estimated),
         visual: null,
         script: text,
         order,
@@ -389,6 +434,7 @@ const projectSlice = createSlice({
         const estimated = estimateSpeechDuration(text, scene.ttsVoice || state.voiceModel);
         scene.audioDuration = Math.round(estimated * 100) / 100;
         scene.duration = Math.max(3, Math.round(estimated));
+        scene.captions = buildCaptionSegments(text, scene.audioDuration);
         markDirty(state);
       }
     },
@@ -434,6 +480,17 @@ const projectSlice = createSlice({
         state.durationSeconds = numeric;
       }
     },
+    toggleCaptions(state, action) {
+      const next =
+        typeof action.payload === "boolean" ? action.payload : !state.captionsEnabled;
+      state.captionsEnabled = next;
+      markDirty(state);
+    },
+    setCaptionTemplate(state, action) {
+      if (!action.payload) return;
+      state.captionTemplate = action.payload;
+      markDirty(state);
+    },
     resetProject(state) {
       Object.assign(state, initialState);
     },
@@ -469,6 +526,12 @@ const projectSlice = createSlice({
           typeof project.durationSeconds === "number"
             ? project.durationSeconds
             : state.durationSeconds;
+        if (typeof project.captionsEnabled === "boolean") {
+          state.captionsEnabled = project.captionsEnabled;
+        }
+        if (project.captionTemplate) {
+          state.captionTemplate = project.captionTemplate;
+        }
         const scenes = project.scenes || [];
         state.scenes = scenes.map((scene, index) => ({
           id: scene.id ?? nanoid(),
@@ -492,6 +555,9 @@ const projectSlice = createSlice({
               typeof scene.duration === "number"
                 ? scene.duration
                 : Math.max(3, Math.round(audioEstimate)),
+            captions: Array.isArray(scene.captions)
+              ? scene.captions
+              : buildCaptionSegments(scene.script || scene.text, audioEstimate),
           };
         });
         state.selectedSceneId = state.scenes[0]?.id ?? null;
@@ -697,6 +763,8 @@ export const {
   setFormat,
   setVoiceModel,
   setDurationSeconds,
+  toggleCaptions,
+  setCaptionTemplate,
   resetProject,
 } = projectSlice.actions;
 
