@@ -11,13 +11,31 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
-from database import adjust_tokens, get_session, get_or_create_user, init_db, log_usage
+from costs import estimate_render_platform_tokens
+from database import (
+    adjust_tokens,
+    backup_database,
+    get_project,
+    get_session,
+    get_or_create_user,
+    init_db,
+    list_plans,
+    list_usage_entries,
+    log_usage,
+    save_project,
+    serialize_project,
+)
 from llm import enrich_scene_metadata, generate_narration, generate_storyboard
 from model_registry import get_model
 from orchestrator import get_orchestrator
 from pexels import search_pexels
 from tts import estimate_tts_duration
 from utils import extract_keywords
+from payments import (
+    StripeUnavailable,
+    create_plan_checkout_session,
+    create_topup_checkout_session,
+)
 
 
 def _map_aspect_to_orientation(value: str) -> str:
@@ -81,16 +99,21 @@ def _split_narration_into_chunks(narration: str, count: int):
 
 load_dotenv()
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+_frontend_origins = os.getenv("FRONTEND_ORIGINS", "http://localhost:5173")
+ALLOWED_ORIGINS = [origin.strip() for origin in _frontend_origins.split(",") if origin.strip()]
+
+CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 # File uploads land in backend/outputs/uploads for easy cleanup.
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "outputs", "uploads")
 app.config["UPLOAD_FOLDER"] = UPLOAD_DIR
 OUTPUT_BASE = Path(os.path.dirname(__file__)) / "outputs"
 
-# Initialise database (idempotent)
-init_db()
-
+# Default user context for demo runs
 DEFAULT_USER_EMAIL = os.getenv("DEFAULT_USER_EMAIL", "demo@alcient.local")
+
+# Initialise database (idempotent)
+init_db(default_user_email=DEFAULT_USER_EMAIL)
 
 
 @contextmanager
@@ -151,10 +174,199 @@ def _log_usage_entry(session, user, action_type, usage_info, extra_payload=None)
     return entry
 
 
+def _resolve_url(value: str | None, fallback_suffix: str) -> str:
+    if value and value.startswith("http"):
+        return value
+    base = request.headers.get("Origin") or request.host_url or ""
+    base = base.rstrip("/")
+    suffix = value or fallback_suffix
+    if suffix.startswith("http"):
+        return suffix
+    return f"{base}/{suffix.lstrip('/')}"
+
+
+def _serialize_usage_entry(entry):
+    return {
+        "id": entry.id,
+        "actionType": entry.action_type,
+        "provider": entry.provider,
+        "model": entry.model,
+        "tokensInput": entry.tokens_input,
+        "tokensOutput": entry.tokens_output,
+        "tokensTotal": entry.tokens_total,
+        "durationSeconds": entry.duration_seconds,
+        "costUsd": entry.cost_usd,
+        "payload": entry.payload or {},
+        "createdAt": entry.created_at.isoformat() if entry.created_at else None,
+    }
+
+
+def _serialize_plan(plan):
+    return {
+        "id": plan.id,
+        "name": plan.name,
+        "monthlyPriceCents": plan.monthly_price_cents,
+        "tokensIncluded": plan.tokens_included,
+        "secondsIncluded": plan.seconds_included,
+        "overageTokensPerMinute": plan.overage_tokens_per_minute,
+    }
+
+
+@app.route('/api/billing/plans', methods=['GET', 'OPTIONS'])
+def api_billing_plans():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    with _user_session() as (session, user):
+        plans = [_serialize_plan(plan) for plan in list_plans(session)]
+        response = jsonify(
+            {
+                "plans": plans,
+                "activePlanId": user.plan_id,
+                "tokenBalance": user.tokens_balance,
+            }
+        )
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/billing/usage', methods=['GET', 'OPTIONS'])
+def api_billing_usage():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    limit_param = request.args.get("limit")
+    try:
+        limit = int(limit_param) if limit_param else 50
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+
+    with _user_session() as (session, user):
+        usage_entries = [_serialize_usage_entry(entry) for entry in list_usage_entries(session, user=user, limit=limit)]
+        response = jsonify(
+            {
+                "usage": usage_entries,
+                "tokenBalance": user.tokens_balance,
+            }
+        )
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/billing/checkout', methods=['POST', 'OPTIONS'])
+def api_billing_checkout():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    data = request.get_json(silent=True) or {}
+    plan_id = (data.get("planId") or "").strip()
+    if not plan_id:
+        return jsonify({"error": "planId is required"}), 400
+
+    success_url = _resolve_url(data.get("successUrl"), "billing?status=success")
+    cancel_url = _resolve_url(data.get("cancelUrl"), "billing?status=cancelled")
+
+    with _user_session() as (session, user):
+        try:
+            checkout_session = create_plan_checkout_session(
+                user_email=user.email,
+                plan_id=plan_id,
+                success_url=success_url,
+                cancel_url=cancel_url,
+            )
+        except StripeUnavailable as exc:
+            return jsonify({"error": str(exc)}), 503
+        except Exception as exc:  # noqa: broad-except - bubble error to client
+            return jsonify({"error": str(exc)}), 400
+
+        response = jsonify({"checkoutSession": checkout_session})
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/billing/topup', methods=['POST', 'OPTIONS'])
+def api_billing_topup():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    data = request.get_json(silent=True) or {}
+    try:
+        amount_cents = int(data.get("amountCents"))
+    except (TypeError, ValueError):
+        amount_cents = 0
+    if amount_cents <= 0:
+        return jsonify({"error": "amountCents must be positive"}), 400
+
+    description = data.get("description") or "Alcient token top-up"
+    success_url = _resolve_url(data.get("successUrl"), "billing?status=topup-success")
+    cancel_url = _resolve_url(data.get("cancelUrl"), "billing?status=topup-cancelled")
+
+    with _user_session() as (session, user):
+        try:
+            checkout_session = create_topup_checkout_session(
+                user_email=user.email,
+                amount_cents=amount_cents,
+                success_url=success_url,
+                cancel_url=cancel_url,
+                description=description,
+            )
+        except StripeUnavailable as exc:
+            return jsonify({"error": str(exc)}), 503
+        except Exception as exc:  # noqa: broad-except
+            return jsonify({"error": str(exc)}), 400
+
+        response = jsonify({"checkoutSession": checkout_session})
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/billing/invoices', methods=['GET'])
+def api_billing_invoices():
+    from payments import get_stripe_invoices, StripeUnavailable
+    email = request.args.get("email")
+    try:
+        invoices = get_stripe_invoices(email=email)
+    except StripeUnavailable as exc:
+        return jsonify({"error": str(exc)}), 503
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"invoices": invoices})
+
+
 @app.after_request
 def apply_cors_headers(response):
-    """Attach permissive CORS headers to every response."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    """Attach CORS headers to every response, echoing allowed Origin if present."""
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
@@ -331,9 +543,12 @@ def api_media_suggest():
 def api_scenes_enrich():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     data = request.get_json(silent=True) or {}
@@ -504,9 +719,12 @@ def serve_rendered_video(project_id, filename):
 def api_project_generate():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
     data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -638,13 +856,88 @@ def api_project_generate():
         return _attach_usage_headers(response, user)
 
 
+@app.route('/api/project/save', methods=['POST', 'OPTIONS'])
+def api_project_save():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    payload = request.get_json(silent=True) or {}
+    project_payload = payload.get("project") if isinstance(payload.get("project"), dict) else payload
+    if not isinstance(project_payload, dict):
+        return jsonify({"error": "project payload is required"}), 400
+
+    with _user_session() as (session, user):
+        saved = save_project(session, user=user, project_payload=project_payload)
+        response = jsonify({"project": serialize_project(saved)})
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/project/<project_id>', methods=['GET', 'OPTIONS'])
+def api_project_get(project_id):
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    with _user_session() as (session, user):
+        project = get_project(session, user=user, project_id=project_id)
+        if not project:
+            return jsonify({"error": "project not found"}), 404
+        response = jsonify({"project": serialize_project(project)})
+        return _attach_usage_headers(response, user)
+
+
+@app.route('/api/project/estimate-cost', methods=['POST', 'OPTIONS'])
+def api_project_estimate_cost():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    payload = request.get_json(silent=True) or {}
+    project_payload = payload.get("project") if isinstance(payload.get("project"), dict) else payload
+    if not isinstance(project_payload, dict) or not project_payload.get("scenes"):
+        return jsonify({"error": "project scenes are required"}), 400
+
+    breakdown = estimate_render_platform_tokens(project_payload)
+
+    with _user_session() as (session, user):
+        response = jsonify(
+            {
+                "estimate": breakdown.as_dict(),
+                "tokenBalance": user.tokens_balance,
+            }
+        )
+        return _attach_usage_headers(response, user)
+
+
 @app.route('/api/project/render', methods=['POST', 'OPTIONS'])
 def api_project_render():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     payload = request.get_json(silent=True) or {}
@@ -652,18 +945,84 @@ def api_project_render():
     if not project.get("scenes"):
         return jsonify({"error": "project scenes are required"}), 400
 
-    orchestrator = get_orchestrator(OUTPUT_BASE)
-    job = orchestrator.submit(project)
-    return jsonify(job), 202
+    with _user_session() as (session, user):
+        saved = save_project(session, user=user, project_payload=project)
+        serialized_project = serialize_project(saved)
+        breakdown = estimate_render_platform_tokens(serialized_project)
+        scene_count = len(serialized_project.get("scenes") or [])
+        voice_model = serialized_project.get("voiceModel")
+
+        tts_model = breakdown.models.get("tts")
+        if breakdown.tts_tokens and tts_model:
+            usage_entry = _log_usage_entry(
+                session,
+                user,
+                "render.tts",
+                {
+                    "provider": tts_model.provider,
+                    "model": tts_model.id,
+                    "usage": {"total_tokens": breakdown.tts_tokens},
+                },
+                extra_payload={
+                    "project_id": saved.id,
+                    "scene_count": scene_count,
+                    "voice_model": voice_model,
+                    "estimated_seconds": round(breakdown.tts_seconds, 2),
+                    "model_id": tts_model.id,
+                },
+            )
+            adjust_tokens(
+                session,
+                user=user,
+                delta=-breakdown.tts_tokens,
+                reason="platform:tts",
+                reference=usage_entry.id if usage_entry else f"render:{saved.id}",
+            )
+
+        video_model = breakdown.models.get("video")
+        if breakdown.video_tokens and video_model:
+            usage_entry = _log_usage_entry(
+                session,
+                user,
+                "render.video",
+                {
+                    "provider": video_model.provider,
+                    "model": video_model.id,
+                    "usage": {"total_tokens": breakdown.video_tokens},
+                },
+                extra_payload={
+                    "project_id": saved.id,
+                    "scene_count": scene_count,
+                    "runtime_seconds": round(breakdown.video_seconds, 2),
+                    "model_id": video_model.id,
+                },
+            )
+            adjust_tokens(
+                session,
+                user=user,
+                delta=-breakdown.video_tokens,
+                reason="platform:render",
+                reference=usage_entry.id if usage_entry else f"render:{saved.id}",
+            )
+
+        session.refresh(user)
+
+        orchestrator = get_orchestrator(OUTPUT_BASE)
+        job = orchestrator.submit(serialized_project)
+        response = jsonify(job)
+        return _attach_usage_headers(response, user), 202
 
 
 @app.route('/api/project/render/<job_id>', methods=['GET', 'OPTIONS'])
 def api_project_render_status(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
     orchestrator = get_orchestrator(OUTPUT_BASE)
     project_hint = request.args.get("projectId")
@@ -704,9 +1063,12 @@ def api_project_render_status(job_id):
 def api_project_render_cancel(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     orchestrator = get_orchestrator(OUTPUT_BASE)
@@ -720,9 +1082,12 @@ def api_project_render_cancel(job_id):
 def api_project_render_pause(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     orchestrator = get_orchestrator(OUTPUT_BASE)
@@ -730,6 +1095,29 @@ def api_project_render_pause(job_id):
     if not job:
         return jsonify({"error": "job not found"}), 404
     return jsonify(job)
+
+
+@app.route('/api/admin/backup', methods=['POST', 'OPTIONS'])
+def api_admin_backup():
+    if request.method == "OPTIONS":
+        response = jsonify({})
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response, 204
+
+    with _user_session() as (session, user):
+        backup_path = backup_database()
+        response = jsonify(
+            {
+                "backupPath": str(backup_path) if backup_path else None,
+                "tokenBalance": user.tokens_balance,
+            }
+        )
+        return _attach_usage_headers(response, user)
 
 
 if __name__ == "__main__":

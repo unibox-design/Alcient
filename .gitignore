@@ -20,3 +20,4 @@ frontend/.env
 
 # Internal planning
 ROADMAP.md
+backend/keys/tts-runner.json

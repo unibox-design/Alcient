@@ -41,7 +41,7 @@ def generate_narration(prompt: str):
                 {"role": "user", "content": f"Write a short, engaging narration (30 seconds) for: {prompt}. After the narration, add ';' followed by a list of comma-separated keywords."}
             ],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=200
         )
 
         text = response.choices[0].message.content.strip()
@@ -118,6 +118,11 @@ def _scale_scene_durations(scenes, target_seconds: int):
     return scaled
 
 
+def estimate_scene_count(target_seconds: int) -> int:
+    """Estimate scene count based on target runtime."""
+    return max(2, min(10, int(target_seconds / 10)))
+
+
 def generate_storyboard(
     prompt: str,
     aspect: str = "landscape",
@@ -137,7 +142,23 @@ def generate_storyboard(
     }
     """
     try:
-        target_seconds = max(30, int(target_seconds or 60))
+        # Normalize input from frontend (handle fractional minutes)
+        try:
+            target_seconds = float(target_seconds)
+            # If it’s given in minutes (e.g., 0.5), convert to seconds
+            if target_seconds <= 5:  
+                # assume small numbers are minutes like 0.5 = 30s
+                target_seconds *= 60
+        except Exception:
+            target_seconds = 60
+
+        target_seconds = max(7, int(target_seconds))
+            # 🔹 Quick test optimization (short preview scripts)
+        if target_seconds <= 10:
+            scene_hint = 2
+            prompt = f"[SHORT TEST] {prompt[:150]}"
+            print("⚡ Quick test mode: limiting to 2 scenes and short prompt")
+
         target_words = max(120, int(target_seconds * 3.0))
         lower_words = int(target_words * 0.9)
         upper_words = int(target_words * 1.1)
