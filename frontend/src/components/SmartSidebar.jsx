@@ -55,17 +55,25 @@ export default function SmartSidebar({ active }) {
 
   const voiceOptions = useMemo(
     () => [
-      "Lady Holiday",
-      "Golden Narrator",
-      "Calm Documentary",
-      "Energetic Host",
-      "Warm Storyteller",
+      { label: "Documentary (Kore)", value: "chirp3hd-kore" },
+      { label: "News (Fenrir)", value: "chirp3hd-fenrir" },
+      { label: "Entertainment (Zephyr)", value: "chirp3hd-zephyr" },
+      { label: "Satire (Orus)", value: "chirp3hd-orus" },
+      { label: "Serious (Pulcherrima)", value: "chirp3hd-pulcherrima" },
+      { label: "Corporate (Rasalgethi)", value: "chirp3hd-rasalgethi" },
+      { label: "Kids (Laomedeia)", value: "chirp3hd-laomedeia" },
+      { label: "Tech (Iapetus)", value: "chirp3hd-iapetus" },
+      { label: "Motivational (Vindemiatrix)", value: "chirp3hd-vindemiatrix" },
+      { label: "Indian Documentary (hi-IN Kore)", value: "chirp3hd-hi-in-kore" },
+      { label: "Hindi Serious (hi-IN Fenrir)", value: "chirp3hd-hi-in-fenrir" },
+      { label: "Kannada Documentary (kn-IN Kore)", value: "chirp3hd-kn-in-kore" },
     ],
     []
   );
 
   const baseDurationOptions = useMemo(
     () => [
+      { label: "Quick (7s Test)", value: 7 },
       { label: "1 min", value: 60 },
       { label: "3 min", value: 180 },
       { label: "5 min", value: 300 },
@@ -90,6 +98,8 @@ export default function SmartSidebar({ active }) {
     const trimmed = prompt.trim();
     setManualError("");
     if (!trimmed || status === "loading") return;
+
+    console.log("🎤 Selected voice model:", voiceModel);
 
     if (mode === "generate") {
       dispatch(
@@ -256,8 +266,8 @@ export default function SmartSidebar({ active }) {
               className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 focus:border-gray-400 focus:outline-none focus:ring-0"
             >
               {voiceOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>

@@ -1,5 +1,5 @@
-"""Stripe integration helpers for plan upgrades and top-ups."""
 
+"""Stripe integration helpers for plan upgrades and top-ups."""
 from __future__ import annotations
 
 import json
@@ -91,6 +91,52 @@ def create_topup_checkout_session(
         cancel_url=cancel_url,
     )
     return {"id": session.get("id"), "url": session.get("url")}
+
+
+def get_stripe_invoices(email: Optional[str] = None) -> list:
+    _ensure_stripe()
+    # Fetch customer by email
+    customers = stripe.Customer.list(email=email, limit=1)
+    if not customers.data:
+        return []
+    customer_id = customers.data[0].id
+    invoices = stripe.Invoice.list(customer=customer_id, limit=20)
+    result = []
+    for inv in invoices.auto_paging_iter():
+        result.append({
+            "id": inv.id,
+            "amount_due": inv.amount_due,
+            "amount_paid": inv.amount_paid,
+            "currency": inv.currency,
+            "status": inv.status,
+            "created": inv.created,
+            "invoice_pdf": getattr(inv, "invoice_pdf", None),
+        })
+    return result
+
+# Razorpay integration (India local payments)
+import uuid  # Needed for Razorpay order receipts
+try:
+    import razorpay  # pip install razorpay
+except ImportError:
+    razorpay = None
+
+def create_razorpay_order(amount_cents: int, currency: str = "INR", receipt: str = None) -> dict:
+    if razorpay is None:
+        raise RuntimeError("razorpay library not installed")
+    key_id = os.getenv("RAZORPAY_KEY_ID")
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET")
+    if not key_id or not key_secret:
+        raise RuntimeError("RAZORPAY_KEY_ID/KEY_SECRET not configured")
+    client = razorpay.Client(auth=(key_id, key_secret))
+    order = client.order.create({
+        "amount": amount_cents,
+        "currency": currency,
+        "receipt": receipt or f"alcient_{uuid.uuid4().hex}",
+        "payment_capture": 1
+    })
+    return order
+
 
 
 __all__ = [

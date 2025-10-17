@@ -216,9 +216,12 @@ def _serialize_plan(plan):
 def api_billing_plans():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     with _user_session() as (session, user):
@@ -237,9 +240,12 @@ def api_billing_plans():
 def api_billing_usage():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     limit_param = request.args.get("limit")
@@ -264,9 +270,12 @@ def api_billing_usage():
 def api_billing_checkout():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     data = request.get_json(silent=True) or {}
@@ -298,9 +307,12 @@ def api_billing_checkout():
 def api_billing_topup():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     data = request.get_json(silent=True) or {}
@@ -333,10 +345,28 @@ def api_billing_topup():
         return _attach_usage_headers(response, user)
 
 
+@app.route('/api/billing/invoices', methods=['GET'])
+def api_billing_invoices():
+    from payments import get_stripe_invoices, StripeUnavailable
+    email = request.args.get("email")
+    try:
+        invoices = get_stripe_invoices(email=email)
+    except StripeUnavailable as exc:
+        return jsonify({"error": str(exc)}), 503
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"invoices": invoices})
+
+
 @app.after_request
 def apply_cors_headers(response):
-    """Attach permissive CORS headers to every response."""
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    """Attach CORS headers to every response, echoing allowed Origin if present."""
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
@@ -513,9 +543,12 @@ def api_media_suggest():
 def api_scenes_enrich():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     data = request.get_json(silent=True) or {}
@@ -686,9 +719,12 @@ def serve_rendered_video(project_id, filename):
 def api_project_generate():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
     data = request.get_json(silent=True) or {}
     prompt = (data.get("prompt") or "").strip()
@@ -824,9 +860,12 @@ def api_project_generate():
 def api_project_save():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     payload = request.get_json(silent=True) or {}
@@ -844,9 +883,12 @@ def api_project_save():
 def api_project_get(project_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     with _user_session() as (session, user):
@@ -861,9 +903,12 @@ def api_project_get(project_id):
 def api_project_estimate_cost():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     payload = request.get_json(silent=True) or {}
@@ -887,9 +932,12 @@ def api_project_estimate_cost():
 def api_project_render():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     payload = request.get_json(silent=True) or {}
@@ -969,9 +1017,12 @@ def api_project_render():
 def api_project_render_status(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
     orchestrator = get_orchestrator(OUTPUT_BASE)
     project_hint = request.args.get("projectId")
@@ -1012,9 +1063,12 @@ def api_project_render_status(job_id):
 def api_project_render_cancel(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     orchestrator = get_orchestrator(OUTPUT_BASE)
@@ -1028,9 +1082,12 @@ def api_project_render_cancel(job_id):
 def api_project_render_pause(job_id):
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     orchestrator = get_orchestrator(OUTPUT_BASE)
@@ -1044,9 +1101,12 @@ def api_project_render_pause(job_id):
 def api_admin_backup():
     if request.method == "OPTIONS":
         response = jsonify({})
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
         return response, 204
 
     with _user_session() as (session, user):

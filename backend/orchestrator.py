@@ -154,6 +154,10 @@ class RenderOrchestrator:
                     scene.get("ttsVoice") or voice_model,
                     self.audio_cache,
                 )
+                # Ensure audioPath points to a .wav file explicitly
+                audio_path = Path(audio_path)
+                if audio_path.suffix.lower() != ".wav":
+                    audio_path = audio_path.with_suffix(".wav")
                 prepared_scenes.append({
                     **scene,
                     "audioPath": str(audio_path),

@@ -222,7 +222,7 @@ export default function MainEditor({ active }) {
           }`}
       </style>
       <div className="flex h-full min-h-0 flex-col gap-4 p-6">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
+      <div className="flex items-center justify-between gap-4">
         <div className="flex items-start gap-3">
           <div className="min-w-[200px]">
             <h2 className="text-lg font-semibold text-gray-800">Storyboard</h2>
@@ -264,6 +264,14 @@ export default function MainEditor({ active }) {
         </div>
         <div className="flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
+
+            <button
+              onClick={handleAddScene}
+              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 transition"
+            >
+              + Add Scene
+            </button>
+
             <button
               onClick={handleRegenerate}
               disabled={generateButtonDisabled}
@@ -274,12 +282,6 @@ export default function MainEditor({ active }) {
               }`}
             >
               {buttonLabel}
-            </button>
-            <button
-              onClick={handleAddScene}
-              className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 transition"
-            >
-              + Add Scene
             </button>
           </div>
           <p className="text-xs text-gray-500 text-right max-w-xs">{costEstimateText}</p>

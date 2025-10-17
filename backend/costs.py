@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
 
 from model_registry import ModelInfo, get_model
-from tts import estimate_tts_duration
+from tts import synthesize_tts  # ✅ updated import
 
 # Voice model hints so we can map friendly names to registry IDs.
 VOICE_MODEL_REGISTRY_MAP: Dict[str, str] = {
@@ -32,21 +32,22 @@ class CostBreakdown:
     models: Dict[str, ModelInfo]
 
     def as_dict(self) -> Dict[str, object]:
+        # Always return numbers, never None, to avoid frontend UI breakage
         return {
-            "totalTokens": self.total_platform_tokens,
-            "ttsTokens": self.tts_tokens,
-            "videoTokens": self.video_tokens,
-            "ttsSeconds": round(self.tts_seconds, 2),
-            "videoSeconds": round(self.video_seconds, 2),
+            "totalTokens": int(self.total_platform_tokens or 0),
+            "ttsTokens": int(self.tts_tokens or 0),
+            "videoTokens": int(self.video_tokens or 0),
+            "ttsSeconds": round(float(self.tts_seconds or 0), 2),
+            "videoSeconds": round(float(self.video_seconds or 0), 2),
             "models": {
                 key: {
-                    "id": model.id,
-                    "provider": model.provider,
-                    "category": model.category,
-                    "humanName": model.human_name,
-                    "costMultiplier": model.cost_multiplier,
+                    "id": getattr(model, "id", None),
+                    "provider": getattr(model, "provider", None),
+                    "category": getattr(model, "category", None),
+                    "humanName": getattr(model, "human_name", None),
+                    "costMultiplier": getattr(model, "cost_multiplier", None),
                 }
-                for key, model in self.models.items()
+                for key, model in (self.models or {}).items()
             },
         }
 
@@ -69,7 +70,10 @@ def _normalise_scene_duration(scene: Dict[str, object]) -> float:
 
     script = scene.get("script") or scene.get("text") or ""
     voice_model = scene.get("ttsVoice")
-    return float(estimate_tts_duration(str(script), str(voice_model) if voice_model else None))
+
+    # ✅ Use Gemini TTS synthesis for accurate duration
+    tts_info = synthesize_tts(str(script), str(voice_model) if voice_model else None)
+    return float(tts_info.get("duration", 0.0))
 
 
 def _iter_scene_durations(scenes: Iterable[Dict[str, object]]) -> Iterable[float]:

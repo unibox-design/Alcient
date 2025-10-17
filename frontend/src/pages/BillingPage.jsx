@@ -278,6 +278,35 @@ export default function BillingPage() {
               </div>
             )}
           </section>
+
+          <section className="mt-10">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-gray-800">Invoices</h2>
+              {/* TODO: Add refresh button and fetch logic */}
+            </div>
+            <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Download</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {/* TODO: Map over invoices and render rows here */}
+                  <tr>
+                    <td className="px-4 py-2 text-sm text-gray-600">—</td>
+                    <td className="px-4 py-2 text-sm text-gray-700">—</td>
+                    <td className="px-4 py-2 text-sm text-gray-500">—</td>
+                    <td className="px-4 py-2 text-sm text-gray-500">—</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="px-4 py-3 text-sm text-gray-500">Invoice history coming soon…</p>
+            </div>
+          </section>
         </section>
       </main>
     </div>
