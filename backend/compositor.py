@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -32,9 +33,16 @@ class RenderCancelled(RuntimeError):
 logger = logging.getLogger(__name__)
 
 
+def _format_ffmpeg_command(args: List[str]) -> str:
+    """Return a human-readable ffmpeg invocation string for logging."""
+
+    return "ffmpeg " + shlex.join(args)
+
+
 def run_ffmpeg(args: List[str]) -> None:
     """Run ffmpeg with the given argument list, raising on failure."""
 
+    logger.info("Running ffmpeg command: %s", _format_ffmpeg_command(args))
     process = subprocess.run(
         ["ffmpeg", *args],
         stdout=subprocess.PIPE,
@@ -167,7 +175,8 @@ def _build_scene_video(
 
 
 def _escape_subtitle_path(path: Path) -> str:
-    escaped = path.as_posix().replace("\\", "\\\\")
+    resolved = path.resolve()
+    escaped = resolved.as_posix().replace("\\", "\\\\")
     escaped = escaped.replace(":", "\\:")
     escaped = escaped.replace("'", r"\'")
     escaped = escaped.replace(",", "\\,")
@@ -175,7 +184,19 @@ def _escape_subtitle_path(path: Path) -> str:
 
 
 def _burn_subtitles(video_path: Path, subtitle_path: Path, output_path: Path) -> None:
-    filter_arg = f"subtitles='{_escape_subtitle_path(subtitle_path)}'"
+    if not subtitle_path.exists():
+        logger.warning(
+            "Subtitle file %s disappeared before burn-in; copying video without captions",
+            subtitle_path,
+        )
+        if output_path.exists():
+            output_path.unlink()
+        video_path.replace(output_path)
+        return
+
+    escaped_path = _escape_subtitle_path(subtitle_path)
+    filter_arg = f"subtitles='{escaped_path}'"
+    logger.debug("Applying subtitle filter: %s", filter_arg)
     run_ffmpeg(
         [
             "-y",

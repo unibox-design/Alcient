@@ -545,7 +545,7 @@ def generate_ass_subtitles(
         return None
 
     subs.events.sort(key=lambda evt: (evt.start, evt.end))
-    subs.save(str(output_path))
+    subs.save(str(output_path), encoding="utf-8")
     logger.info(
         "Generated subtitle file %s with %s events using style %s",
         output_path,
