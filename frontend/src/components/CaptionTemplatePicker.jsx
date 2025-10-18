@@ -9,6 +9,10 @@ const STYLES = [
     description: "Calm, highly readable line-by-line captions.",
   },
   {
+    name: "Simple Minimal",
+    description: "Low-profile lines with subtle outlines and spacing.",
+  },
+  {
     name: "Kinetic Pop",
     description: "Bold word-by-word bursts with strong outlines.",
   },

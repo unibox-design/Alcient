@@ -517,6 +517,30 @@ const projectSlice = createSlice({
         state.status = "loading";
         state.error = null;
         state.runtimeSeconds = null;
+        state.title = "";
+        state.narration = "";
+        state.keywords = [];
+        state.scenes = [];
+        state.selectedSceneId = null;
+        state.isDirty = false;
+        state.render = {
+          ...state.render,
+          status: "idle",
+          jobId: null,
+          error: null,
+          autoTrigger: false,
+          progress: 0,
+          videoUrl: null,
+        };
+        state.mediaSuggest = { status: "idle", error: null };
+        state.sceneEnrich = { status: "idle", error: null, source: null };
+        state.costEstimate = {
+          status: "idle",
+          error: null,
+          data: null,
+          tokenBalance: state.tokenBalance,
+          updatedAt: null,
+        };
         const { format, voiceModel, durationSeconds } = action.meta.arg || {};
         if (format) state.format = format;
         if (voiceModel) state.voiceModel = voiceModel;

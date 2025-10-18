@@ -6,6 +6,7 @@ import {
   autofillSceneMedia,
   generateProjectFromPrompt,
   initProject,
+  setCaptionStyle,
   setDurationSeconds,
   setVoiceModel,
 } from "../store/projectSlice";
@@ -29,6 +30,7 @@ export default function SmartSidebar({ active }) {
   const promptFromState = useSelector((state) => state.project.prompt);
   const voiceModel = useSelector((state) => state.project.voiceModel);
   const durationSeconds = useSelector((state) => state.project.durationSeconds);
+  const captionStyle = useSelector((state) => state.project.captionStyle);
   const [prompt, setPrompt] = useState(promptFromState || "");
   const [mode, setMode] = useState("generate"); // generate | manual
   const [selectedFormat, setSelectedFormat] = useState(format);
@@ -85,6 +87,13 @@ export default function SmartSidebar({ active }) {
 
   const handleVoiceChange = (value) => {
     dispatch(setVoiceModel(value));
+  };
+
+  const isSimpleMinimal = captionStyle === "Simple Minimal";
+
+  const handleToggleSimpleMinimal = () => {
+    const nextStyle = isSimpleMinimal ? "Classic Clean" : "Simple Minimal";
+    dispatch(setCaptionStyle(nextStyle));
   };
 
   const handleDurationChange = (value) => {
@@ -254,6 +263,27 @@ export default function SmartSidebar({ active }) {
         )}
 
         <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
+            <div>
+              <p className="text-xs font-semibold text-gray-700">Simple minimal captions</p>
+              <p className="text-[11px] text-gray-500">Toggle to switch between Classic Clean and a pared-down look.</p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isSimpleMinimal}
+              onClick={handleToggleSimpleMinimal}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
+                isSimpleMinimal ? "bg-gray-900" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                  isSimpleMinimal ? "translate-x-5" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
           <div className="flex items-center gap-3">
             <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
               Voice

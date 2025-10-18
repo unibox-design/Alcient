@@ -12,7 +12,6 @@ import {
   estimateProjectCost,
 } from "../store/projectSlice";
 import ReplaceClipModal from "./ReplaceClipModal";
-import CaptionTemplatePicker from "./CaptionTemplatePicker";
 
 export default function MainEditor({ active }) {
   const dispatch = useDispatch();
@@ -47,6 +46,7 @@ export default function MainEditor({ active }) {
     projectStatus === "loading" ||
     sceneEnrich.status === "loading" ||
     mediaSuggest.status === "loading";
+  const isLoadingProject = projectStatus === "loading";
   const showGeneratingState = isScenePipelineRunning;
   const showSceneList = !showGeneratingState && scenes.length > 0;
   const showEmptyState = !showGeneratingState && scenes.length === 0;
@@ -64,6 +64,9 @@ export default function MainEditor({ active }) {
         : "Generate video";
 
   const costEstimateText = useMemo(() => {
+    if (isLoadingProject) {
+      return "";
+    }
     if (costEstimate.status === "loading") {
       return "Estimating token cost…";
     }
@@ -89,16 +92,19 @@ export default function MainEditor({ active }) {
       parts.push(`Balance after render ~ ${balanceAfter}`);
     }
     return parts.join(" · ");
-  }, [costEstimate, scenes.length, tokenBalance]);
+  }, [costEstimate, scenes.length, tokenBalance, isLoadingProject]);
 
   const costEstimateModels = useMemo(() => {
+    if (isLoadingProject) {
+      return null;
+    }
     const models = costEstimate.data?.models;
     if (!models) return null;
     const ttsModel = models.tts ? models.tts.humanName || models.tts.id : null;
     const videoModel = models.video ? models.video.humanName || models.video.id : null;
     if (!ttsModel && !videoModel) return null;
     return { tts: ttsModel, video: videoModel };
-  }, [costEstimate]);
+  }, [costEstimate, isLoadingProject]);
 
   useEffect(() => {
     if (renderState.autoTrigger && scenes.length > 0 && !isRendering) {
@@ -227,11 +233,13 @@ export default function MainEditor({ active }) {
         <div className="flex items-start gap-3">
           <div className="min-w-[200px]">
             <h2 className="text-lg font-semibold text-gray-800">Storyboard</h2>
-            <p className="text-sm text-gray-500">
-              Aspect {formattedAspect} · Voice {voiceModel}
-              {actualRuntime ? ` · Runtime ${formatDuration(actualRuntime)}` : ""}
-            </p>
-            {projectTitle && (
+            {!isLoadingProject && (
+              <p className="text-sm text-gray-500">
+                Aspect {formattedAspect} · Voice {voiceModel}
+                {actualRuntime ? ` · Runtime ${formatDuration(actualRuntime)}` : ""}
+              </p>
+            )}
+            {!isLoadingProject && projectTitle && (
               <p className="text-sm text-gray-700 mt-1">{projectTitle}</p>
             )}
             {renderState.status === "dirty" && (
@@ -261,7 +269,6 @@ export default function MainEditor({ active }) {
                 {mediaSuggest.error}
               </p>
             )}
-            <CaptionTemplatePicker className="mt-4" />
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -286,7 +293,9 @@ export default function MainEditor({ active }) {
               {buttonLabel}
             </button>
           </div>
-          <p className="text-xs text-gray-500 text-right max-w-xs">{costEstimateText}</p>
+          {costEstimateText ? (
+            <p className="text-xs text-gray-500 text-right max-w-xs">{costEstimateText}</p>
+          ) : null}
           {costEstimateModels && (
             <p className="text-[11px] text-gray-400 text-right">
               Models: {costEstimateModels.tts || "—"} voice · {costEstimateModels.video || "—"} render

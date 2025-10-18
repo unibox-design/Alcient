@@ -146,6 +146,23 @@ STYLE_PRESETS: Dict[str, CaptionStyleDefinition] = {
         max_words_per_line=9,
         bold=True,
     ),
+    "Simple Minimal": CaptionStyleDefinition(
+        style_name="SimpleMinimal",
+        mode="line",
+        fontname="Inter Medium",
+        fontsize=38,
+        primary="&H00FFFFFF",
+        outline_color="&H00101010",
+        border_style=1,
+        outline=1.2,
+        shadow=0.8,
+        margin_v=70,
+        margin_h=90,
+        secondary="&H00FFFFFF",
+        karaoke=False,
+        max_words_per_line=10,
+        spacing=0.5,
+    ),
 }
 
 DEFAULT_CAPTION_STYLE = "Classic Clean"
@@ -484,7 +501,7 @@ def generate_ass_subtitles(
                         start=start_ms,
                         end=end_ms,
                         text=text,
-                        style=style.name,
+                        style=style_definition.style_name,
                     )
                 )
                 event_count += 1
@@ -510,7 +527,7 @@ def generate_ass_subtitles(
                         start=start_ms,
                         end=end_ms,
                         text=text,
-                        style=style.name,
+                        style=style_definition.style_name,
                     )
                 )
                 event_count += 1
