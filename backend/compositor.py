@@ -15,6 +15,8 @@ import requests
 
 from captions import DEFAULT_CAPTION_STYLE, generate_ass_subtitles
 
+DISABLED_CAPTION_STYLES = {"", "none", "no captions", "no caption", "off", "disabled"}
+
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
     "square": (1080, 1080),
@@ -240,7 +242,9 @@ def render_project(
     scene_paths: List[Path] = []
     timeline_scenes: List[Dict] = []
     target_resolution = TARGET_RESOLUTIONS.get(orientation, TARGET_RESOLUTIONS["landscape"])
-    selected_style = caption_style or DEFAULT_CAPTION_STYLE
+    raw_caption_style = (caption_style or "").strip()
+    disable_captions = raw_caption_style.lower() in DISABLED_CAPTION_STYLES
+    selected_style = raw_caption_style or DEFAULT_CAPTION_STYLE
     try:
         for idx, scene in enumerate(scenes):
             if cancel_checker and cancel_checker():
@@ -284,12 +288,16 @@ def render_project(
         if not scene_paths:
             raise RenderError("No scene clips were generated")
 
-        subtitle_file = generate_ass_subtitles(
-            project_id,
-            timeline_scenes,
-            selected_style,
-            resolution=target_resolution,
-        )
+        subtitle_file = None
+        if disable_captions:
+            logger.info("Captions disabled for project %s; skipping subtitle generation", project_id)
+        else:
+            subtitle_file = generate_ass_subtitles(
+                project_id,
+                timeline_scenes,
+                selected_style,
+                resolution=target_resolution,
+            )
 
         list_file = temp_dir / "concat.txt"
         with list_file.open("w", encoding="utf-8") as fh:
@@ -328,9 +336,14 @@ def render_project(
             logger.debug("Subtitle source: %s", subtitle_file)
             _burn_subtitles(concat_path, subtitle_file, final_path)
         else:
+            if disable_captions:
+                logger.info(
+                    "Captions disabled or unavailable for project %s; video will ship without subtitles",
+                    project_id,
+                )
             if subtitle_file and subtitle_file.exists() and subtitle_file.stat().st_size == 0:
                 logger.warning("Subtitle file %s was empty; skipping burn-in", subtitle_file)
-            elif subtitle_file is None:
+            elif subtitle_file is None and not disable_captions:
                 logger.info("No subtitles generated for project %s", project_id)
             if final_path.exists():
                 final_path.unlink()

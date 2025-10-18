@@ -23,6 +23,7 @@ export default function ProjectPage() {
           title: `${prettyId} Project`,
           format: "landscape",
           scenes: [],
+          captionStyle: project.captionStyle,
         })
       );
     }

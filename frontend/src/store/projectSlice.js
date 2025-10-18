@@ -13,6 +13,7 @@ import { suggestClips } from "../lib/mediaApi";
 import { enrichScenesMetadata } from "../lib/sceneApi";
 
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
+const NO_CAPTIONS_STYLE = "No Captions";
 
 const normalizeNarration = (value) => {
   if (!value) return "";
@@ -47,7 +48,7 @@ const buildProjectPayload = (project) => ({
   narration: project.narration,
   durationSeconds: project.durationSeconds,
   runtimeSeconds: project.runtimeSeconds,
-  captionStyle: project.captionStyle,
+  captionStyle: project.captionStyle || NO_CAPTIONS_STYLE,
   scenes: project.scenes.map((scene) => ({
     id: scene.id,
     text: scene.text,
@@ -269,7 +270,7 @@ const createInitialState = () => ({
   prompt: "",
   narration: "",
   keywords: [],
-  captionStyle: "Classic Clean",
+  captionStyle: NO_CAPTIONS_STYLE,
   scenes: [],
   selectedSceneId: null,
   status: "idle",
@@ -339,7 +340,11 @@ const projectSlice = createSlice({
         captionsMetadata && typeof captionsMetadata === "object"
           ? (captionsMetadata.style || captionsMetadata.template || "").trim()
           : "";
-      state.captionStyle = incomingStyle || fallbackStyle || "Classic Clean";
+      const previousStyle = state.captionStyle || NO_CAPTIONS_STYLE;
+      const userSelection =
+        previousStyle && previousStyle !== NO_CAPTIONS_STYLE ? previousStyle : "";
+      state.captionStyle =
+        incomingStyle || fallbackStyle || userSelection || NO_CAPTIONS_STYLE;
       if (durationSeconds != null) {
         const parsed =
           typeof durationSeconds === "number"
@@ -567,7 +572,8 @@ const projectSlice = createSlice({
             : generatedCaptionsMeta && typeof generatedCaptionsMeta === "object"
               ? (generatedCaptionsMeta.style || generatedCaptionsMeta.template || "").trim()
               : "";
-        state.captionStyle = generatedStyle || "Classic Clean";
+        const previousStyle = state.captionStyle || NO_CAPTIONS_STYLE;
+        state.captionStyle = generatedStyle || previousStyle || NO_CAPTIONS_STYLE;
         if (typeof project.runtimeSeconds === "number") {
           state.runtimeSeconds = project.runtimeSeconds;
         } else {

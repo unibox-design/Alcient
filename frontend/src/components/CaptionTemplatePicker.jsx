@@ -5,6 +5,10 @@ import { setCaptionStyle } from "../store/projectSlice";
 
 const STYLES = [
   {
+    name: "No Captions",
+    description: "Keep the video clean with no burned-in subtitles.",
+  },
+  {
     name: "Classic Clean",
     description: "Calm, highly readable line-by-line captions.",
   },
@@ -33,7 +37,7 @@ const STYLES = [
 export default function CaptionTemplatePicker({ className = "" }) {
   const dispatch = useDispatch();
   const selectedStyle =
-    useSelector((state) => state.project.captionStyle) || "Classic Clean";
+    useSelector((state) => state.project.captionStyle) || "No Captions";
 
   const handleSelect = (name) => {
     dispatch(setCaptionStyle(name));

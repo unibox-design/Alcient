@@ -46,6 +46,8 @@ engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
+DEFAULT_CAPTION_STYLE_NAME = "Classic Clean"
+
 
 def generate_uuid() -> str:
     return uuid.uuid4().hex
@@ -340,6 +342,8 @@ def serialize_project(project: Project) -> Dict[str, Any]:
         or captions_meta.get("preset")
         or None
     )
+    if not caption_style:
+        caption_style = DEFAULT_CAPTION_STYLE_NAME
 
     return {
         "id": project.id,

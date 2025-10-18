@@ -4,10 +4,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import openai
 from dotenv import load_dotenv
@@ -54,6 +55,10 @@ class CaptionStyleDefinition:
     max_words_per_line: int = 8
     blur: float = 0.0
     spacing: float = 0.0
+    uppercase: bool = False
+    word_color_cycle: Optional[Tuple[str, ...]] = None
+    word_tags: Tuple[str, ...] = ()
+    line_tags: Tuple[str, ...] = ()
 
 
 SUBTITLE_CACHE_DIR = Path(__file__).resolve().parent / "outputs" / "cache" / "subtitles"
@@ -79,93 +84,159 @@ STYLE_PRESETS: Dict[str, CaptionStyleDefinition] = {
     "Kinetic Pop": CaptionStyleDefinition(
         style_name="KineticPop",
         mode="word",
-        fontname="Poppins ExtraBold",
-        fontsize=44,
-        primary="&H0000FFFF",
+        fontname="Impact",
+        fontsize=52,
+        primary="&H0000DDFF",
         outline_color="&H00000000",
         border_style=1,
-        outline=3.0,
-        shadow=2.0,
-        margin_v=80,
+        outline=4.0,
+        shadow=0.0,
+        margin_v=84,
         margin_h=90,
-        secondary="&H0000FFFF",
+        secondary="&H0000DDFF",
         bold=True,
         max_words_per_line=1,
-        spacing=1.0,
+        spacing=1.8,
+        uppercase=True,
+        word_color_cycle=(
+            "&H0000DDFF",  # warm yellow
+            "&H00FFC600",  # aqua blue
+            "&H009D55FF",  # hot pink
+        ),
+        word_tags=(
+            "\\bord7",
+            "\\shad0",
+            "\\fscx112",
+            "\\fscy110",
+        ),
     ),
     "Highlight Bar": CaptionStyleDefinition(
         style_name="HighlightBar",
         mode="line",
-        fontname="Inter SemiBold",
+        fontname="Helvetica Neue Bold",
         fontsize=42,
-        primary="&H00FFFFFF",
+        primary="&H0060FFE8",
         outline_color="&H00000000",
         border_style=3,
-        outline=2.0,
+        outline=1.0,
         shadow=0.0,
         margin_v=70,
         margin_h=90,
-        secondary="&H0033FFAA",
-        back_color="&HAA000000",
+        secondary="&H0000D5FF",
+        back_color="&H99000000",
         karaoke=True,
         max_words_per_line=9,
+        uppercase=True,
+        line_tags=(
+            "\\bord0",
+            "\\shad0",
+        ),
     ),
     "Outline Glow": CaptionStyleDefinition(
         style_name="OutlineGlow",
         mode="word",
-        fontname="Montserrat Black",
-        fontsize=46,
-        primary="&H00FFFFFF",
-        outline_color="&H004A2CFF",
+        fontname="Arial Black",
+        fontsize=48,
+        primary="&H00E4FDFF",
+        outline_color="&H007D3DFF",
         border_style=1,
-        outline=4.0,
+        outline=5.0,
         shadow=0.0,
         margin_v=80,
         margin_h=100,
-        secondary="&H00FFFFFF",
+        secondary="&H00E4FDFF",
         bold=True,
-        blur=2.5,
-        spacing=0.5,
+        blur=3.5,
+        spacing=0.6,
+        uppercase=True,
+        word_color_cycle=(
+            "&H008040FF",  # neon purple
+            "&H00FFFFFF",  # crisp white
+        ),
+        word_tags=(
+            "\\bord6",
+            "\\blur4",
+        ),
         max_words_per_line=1,
     ),
     "Subtitle Boxed": CaptionStyleDefinition(
         style_name="SubtitleBoxed",
         mode="line",
-        fontname="Helvetica Neue Medium",
-        fontsize=40,
-        primary="&H00FFFFFF",
+        fontname="Gill Sans Bold",
+        fontsize=44,
+        primary="&H00F5F5F5",
         outline_color="&H00000000",
         border_style=3,
         outline=0.0,
         shadow=0.0,
         margin_v=64,
         margin_h=85,
-        secondary="&H0040FFDA",
-        back_color="&HAA000000",
+        secondary="&H003CFFE0",
+        back_color="&HB0000000",
         karaoke=True,
         max_words_per_line=9,
         bold=True,
+        uppercase=True,
+        line_tags=(
+            "\\bord0",
+            "\\shad0",
+        ),
     ),
     "Simple Minimal": CaptionStyleDefinition(
         style_name="SimpleMinimal",
         mode="line",
-        fontname="Inter Medium",
-        fontsize=38,
-        primary="&H00FFFFFF",
-        outline_color="&H00101010",
+        fontname="Helvetica Neue",
+        fontsize=36,
+        primary="&H00F5F5F5",
+        outline_color="&H00202020",
         border_style=1,
-        outline=1.2,
-        shadow=0.8,
+        outline=1.0,
+        shadow=0.4,
         margin_v=70,
         margin_h=90,
-        secondary="&H00FFFFFF",
+        secondary="&H00F5F5F5",
         karaoke=False,
         max_words_per_line=10,
-        spacing=0.5,
+        spacing=0.4,
+        line_tags=(
+            "\\bord1",
+            "\\shad0",
+        ),
     ),
 }
 
 DEFAULT_CAPTION_STYLE = "Classic Clean"
+
+_STYLE_KEY_LOOKUP: Dict[str, str] = {}
+_STYLE_SLUG_LOOKUP: Dict[str, str] = {}
+for display_name, definition in STYLE_PRESETS.items():
+    lowered_display = display_name.lower()
+    _STYLE_KEY_LOOKUP[lowered_display] = display_name
+    display_slug = re.sub(r"[^a-z0-9]+", "", lowered_display)
+    if display_slug:
+        _STYLE_SLUG_LOOKUP[display_slug] = display_name
+    style_name_lower = definition.style_name.lower()
+    _STYLE_KEY_LOOKUP[style_name_lower] = display_name
+    style_slug = re.sub(r"[^a-z0-9]+", "", style_name_lower)
+    if style_slug and style_slug not in _STYLE_SLUG_LOOKUP:
+        _STYLE_SLUG_LOOKUP[style_slug] = display_name
+
+
+def _resolve_caption_style(style_name: Optional[str]) -> str:
+    if not style_name:
+        return DEFAULT_CAPTION_STYLE
+    token = str(style_name).strip()
+    if not token:
+        return DEFAULT_CAPTION_STYLE
+    if token in STYLE_PRESETS:
+        return token
+    lowered = token.lower()
+    if lowered in _STYLE_KEY_LOOKUP:
+        return _STYLE_KEY_LOOKUP[lowered]
+    slug = re.sub(r"[^a-z0-9]+", "", lowered)
+    if slug and slug in _STYLE_SLUG_LOOKUP:
+        return _STYLE_SLUG_LOOKUP[slug]
+    return DEFAULT_CAPTION_STYLE
 
 
 def _coerce_time(value, fallback: float | None = None) -> float | None:
@@ -339,6 +410,45 @@ def _sanitize_ass_text(text: str) -> str:
     return value
 
 
+def _transform_token(text: str, style_definition: CaptionStyleDefinition) -> str:
+    token = text or ""
+    if style_definition.uppercase:
+        token = token.upper()
+    return _sanitize_ass_text(token)
+
+
+def _format_override_color(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    token = str(value).strip().upper()
+    if not token.startswith("&H"):
+        return None
+    hex_part = token[2:]
+    if not hex_part:
+        return None
+    if len(hex_part) > 8:
+        hex_part = hex_part[-8:]
+    if len(hex_part) < 6:
+        hex_part = hex_part.rjust(6, "0")
+    # ASS override tags expect BBGGRR (alpha handled by underlying style)
+    color = hex_part[-6:]
+    return f"&H{color}&"
+
+
+def _wrap_with_tags(text: str, tags: Sequence[str]) -> str:
+    if not text:
+        return ""
+    filtered = [
+        tag
+        for tag in tags
+        if isinstance(tag, str) and tag.strip() and tag.strip().startswith("\\")
+    ]
+    if not filtered:
+        return text
+    joined = "".join(tag.strip() for tag in filtered)
+    return f"{{{joined}}}{text}"
+
+
 def _requires_space(prev_text: str, next_text: Optional[str]) -> bool:
     if not next_text:
         return False
@@ -368,12 +478,14 @@ def _group_words_into_lines(words: Sequence[CaptionWord], max_words: int) -> Lis
     return lines
 
 
-def _build_plain_line(words: Sequence[CaptionWord]) -> str:
+def _build_plain_line(
+    words: Sequence[CaptionWord], style_definition: CaptionStyleDefinition
+) -> str:
     if not words:
         return ""
     pieces: List[str] = []
     for idx, word in enumerate(words):
-        token = _sanitize_ass_text(word.text or "")
+        token = _transform_token(word.text or "", style_definition)
         if not token:
             continue
         pieces.append(token)
@@ -383,12 +495,14 @@ def _build_plain_line(words: Sequence[CaptionWord]) -> str:
     return "".join(pieces).strip()
 
 
-def _build_karaoke_line(words: Sequence[CaptionWord]) -> str:
+def _build_karaoke_line(
+    words: Sequence[CaptionWord], style_definition: CaptionStyleDefinition
+) -> str:
     if not words:
         return ""
     fragments: List[str] = []
     for idx, word in enumerate(words):
-        token = _sanitize_ass_text(word.text or "")
+        token = _transform_token(word.text or "", style_definition)
         if not token:
             continue
         duration = max(word.end - word.start, 0.01)
@@ -420,7 +534,9 @@ def generate_ass_subtitles(
 ) -> Optional[Path]:
     """Generate an ASS subtitle file for the project timeline."""
 
-    style_key = caption_style if caption_style in STYLE_PRESETS else DEFAULT_CAPTION_STYLE
+    style_key = _resolve_caption_style(caption_style)
+    if caption_style and caption_style != style_key:
+        logger.info("Resolved caption style '%s' to preset '%s'", caption_style, style_key)
     style_definition = STYLE_PRESETS[style_key]
 
     safe_project_id = "".join(
@@ -468,6 +584,7 @@ def generate_ass_subtitles(
 
     timeline_offset = 0.0
     event_count = 0
+    word_event_index = 0
     for scene in scenes:
         local_words = _normalise_caption_payload(scene.get("captions"))
         if not local_words:
@@ -489,33 +606,43 @@ def generate_ass_subtitles(
 
         if style_definition.mode == "word":
             for word in absolute_words:
-                text = _sanitize_ass_text(word.text or "")
+                text = _transform_token(word.text or "", style_definition)
                 if not text:
                     continue
+                tags: List[str] = list(style_definition.word_tags or ())
+                color_cycle = style_definition.word_color_cycle or ()
+                if color_cycle:
+                    color_value = color_cycle[word_event_index % len(color_cycle)]
+                    override_color = _format_override_color(color_value)
+                    if override_color:
+                        tags.append(f"\\1c{override_color}")
                 start_ms = max(0, int(round(word.start * 1000)))
                 end_ms = int(round(word.end * 1000))
                 if end_ms <= start_ms:
                     end_ms = start_ms + 1
+                decorated = _wrap_with_tags(text, tags)
                 subs.events.append(
                     pysubs2.SSAEvent(
                         start=start_ms,
                         end=end_ms,
-                        text=text,
+                        text=decorated,
                         style=style_definition.style_name,
                     )
                 )
                 event_count += 1
+                word_event_index += 1
         else:
             line_groups = _group_words_into_lines(absolute_words, style_definition.max_words_per_line)
             for line_words in line_groups:
                 if not line_words:
                     continue
                 if style_definition.karaoke:
-                    text = _build_karaoke_line(line_words)
+                    text = _build_karaoke_line(line_words, style_definition)
                 else:
-                    text = _build_plain_line(line_words)
+                    text = _build_plain_line(line_words, style_definition)
                 if not text:
                     continue
+                text = _wrap_with_tags(text, style_definition.line_tags or ())
                 start = min(word.start for word in line_words)
                 end = max(word.end for word in line_words)
                 start_ms = max(0, int(round(start * 1000)))
