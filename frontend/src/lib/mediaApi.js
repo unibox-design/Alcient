@@ -64,3 +64,18 @@ export async function attachMediaToScene({ projectId, sceneId, media }) {
     return false;
   }
 }
+
+export async function generateCaptions({ audioUrl, text }) {
+  try {
+    const { ok, body } = await jsonFetch(`${BASE}/api/captions/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audioUrl, text }),
+    });
+    if (!ok) throw new Error(body?.error || "Failed to generate captions");
+    return body;
+  } catch (err) {
+    console.error("❌ generateCaptions failed:", err);
+    return null;
+  }
+}

@@ -1,3 +1,7 @@
+import { generateCaptions } from "../api";
+import { store } from "../store/store";
+import { fetchSceneCaptions } from "../store/projectSlice";
+
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
 export async function enrichScenesMetadata({ format = "landscape", scenes = [] }) {
@@ -12,4 +16,30 @@ export async function enrichScenesMetadata({ format = "landscape", scenes = [] }
     throw new Error(error);
   }
   return body;
+}
+
+export async function generateSceneAudioAndCaptions({ sceneId, text, voiceModel }) {
+  try {
+    // Step 1: Generate TTS audio
+    const ttsRes = await fetch(`${BASE}/api/project/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voiceModel }),
+    });
+    const ttsBody = await ttsRes.json();
+    if (!ttsRes.ok) throw new Error(ttsBody.error || "TTS failed");
+
+    const audioUrl = ttsBody.audioUrl || ttsBody.path;
+
+    // Step 2: Dispatch Redux caption fetch instead of direct API call
+    store.dispatch(fetchSceneCaptions({ sceneId, audioUrl, text }));
+
+    return {
+      audioUrl,
+      duration: ttsBody.duration || 0,
+    };
+  } catch (err) {
+    console.error("❌ Scene audio/captions generation failed:", err);
+    return null;
+  }
 }

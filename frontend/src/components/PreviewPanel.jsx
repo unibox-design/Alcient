@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { cancelRenderJob, fetchRenderStatus, pauseRenderJob } from "../store/projectSlice";
+import { cancelRenderJob, fetchRenderStatus, pauseRenderJob, fetchSceneCaptions } from "../store/projectSlice";
 import CaptionOverlay from "./captions/CaptionOverlay";
 import { buildProjectCaptionTimeline } from "../lib/captions";
 
@@ -34,8 +34,16 @@ export default function PreviewPanel() {
       }, 2000);
       return () => clearInterval(interval);
     }
+    if (renderState.status === "completed") {
+      scenes.forEach((scene) => {
+        const audioUrl = scene.audioUrl || (scene.audio && scene.audio.url);
+        if (audioUrl) {
+          dispatch(fetchSceneCaptions({ sceneId: scene.id, audioUrl, text: scene.text }));
+        }
+      });
+    }
     return undefined;
-  }, [dispatch, projectId, renderState.jobId, renderState.status]);
+  }, [dispatch, projectId, renderState.jobId, renderState.status, scenes]);
 
   const statusText = () => {
     switch (renderState.status) {

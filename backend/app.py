@@ -11,6 +11,8 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
+from flask import send_from_directory
+
 from costs import estimate_render_platform_tokens
 from database import (
     adjust_tokens,
@@ -36,6 +38,9 @@ from payments import (
     create_plan_checkout_session,
     create_topup_checkout_session,
 )
+import tempfile
+import requests
+from captions import generate_word_timestamps
 
 
 def _map_aspect_to_orientation(value: str) -> str:
@@ -706,6 +711,34 @@ def uploaded_file(filename):
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
 
+@app.route("/api/captions/generate", methods=["POST"])
+def generate_captions():
+    data = request.get_json(silent=True) or {}
+    audio_url = data.get("audioUrl")
+    text = data.get("text", "")
+
+    if not audio_url:
+        return jsonify({"error": "Missing audioUrl"}), 400
+
+    # Download the audio file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        try:
+            response = requests.get(audio_url, timeout=15)
+            response.raise_for_status()
+        except Exception as e:
+            return jsonify({"error": f"Failed to download audio: {e}"}), 400
+        tmp.write(response.content)
+        tmp_path = tmp.name
+
+    try:
+        timestamps = generate_word_timestamps(tmp_path, text)
+        os.remove(tmp_path)
+        return jsonify({"captions": timestamps})
+    except Exception as e:
+        print("❌ Caption generation error:", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/videos/<project_id>/<path:filename>')
 def serve_rendered_video(project_id, filename):
     project_dir = OUTPUT_BASE / "renders" / project_id
@@ -1118,6 +1151,21 @@ def api_admin_backup():
             }
         )
         return _attach_usage_headers(response, user)
+    
+@app.route('/<path:filename>')
+def serve_local_file(filename):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, filename)
+
+    print(f"🧩 [serve_local_file] Request for: {filename}")
+    print(f"🔍 Checking absolute path: {file_path}")
+
+    if not os.path.exists(file_path):
+        print("❌ File not found:", file_path)
+        return jsonify({"error": f"File not found: {filename}"}), 404
+
+    print("✅ File found, serving:", file_path)
+    return send_from_directory(base_dir, filename)
 
 
 if __name__ == "__main__":

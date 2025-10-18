@@ -11,7 +11,8 @@ import {
 } from "../lib/renderApi";
 import { suggestClips } from "../lib/mediaApi";
 import { enrichScenesMetadata } from "../lib/sceneApi";
-import { DEFAULT_CAPTION_TEMPLATE } from "../lib/captions";
+// import { DEFAULT_CAPTION_TEMPLATE } from "../lib/captions";
+import { generateCaptions } from "../api"; // near the top with other imports
 
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
@@ -238,6 +239,7 @@ export const enrichSceneMetadata = createAsyncThunk(
   }
 );
 
+
 export const autofillSceneMedia = createAsyncThunk(
   "project/autofillSceneMedia",
   async (_, { getState, rejectWithValue }) => {
@@ -273,6 +275,37 @@ export const autofillSceneMedia = createAsyncThunk(
     }
   }
 );
+
+export const generateSceneCaptions = createAsyncThunk(
+  "project/generateSceneCaptions",
+  async ({ sceneId, audioUrl, text }, { rejectWithValue }) => {
+    try {
+      const res = await fetch(`${BASE}/api/captions/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl, text }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to generate captions");
+      return { sceneId, captions: body.words || body.captions || [] };
+    } catch (err) {
+      return rejectWithValue({ error: err.message });
+    }
+  }
+);
+
+export const fetchSceneCaptions = createAsyncThunk(
+  "project/fetchSceneCaptions",
+  async ({ sceneId, audioUrl, text }, { rejectWithValue }) => {
+    try {
+      const data = await generateCaptions({ audioUrl, text });
+      return { sceneId, captions: data.words || data.captions || [] };
+    } catch (err) {
+      return rejectWithValue({ error: err.message });
+    }
+  }
+);
+
 
 /**
  * Scene model:
@@ -479,6 +512,21 @@ const projectSlice = createSlice({
         scene.duration = Math.max(3, Math.round(estimated));
         scene.captions = buildCaptionSegments(text, scene.audioDuration);
         markDirty(state);
+      }
+    },
+    updateSceneCaptions(state, action) {
+      const { id, captions } = action.payload;
+      const scene = state.scenes.find((s) => s.id === id);
+      if (scene) {
+        scene.captions = Array.isArray(captions) ? captions : [];
+        markDirty(state);
+      }
+    },
+    setSceneCaptions(state, action) {
+      const { sceneId, captions } = action.payload || {};
+      const scene = state.scenes.find((s) => s.id === sceneId);
+      if (scene) {
+        scene.captions = Array.isArray(captions) ? captions : [];
       }
     },
     setSceneMedia(state, action) {
@@ -824,6 +872,17 @@ const projectSlice = createSlice({
         state.mediaSuggest.status = "failed";
         state.mediaSuggest.error =
           action.payload?.error || action.error?.message || "Failed to suggest media";
+      })
+      .addCase(generateSceneCaptions.fulfilled, (state, action) => {
+        const { sceneId, captions } = action.payload;
+        const scene = state.scenes.find((s) => s.id === sceneId);
+        if (scene) scene.captions = captions;
+      })
+      .addCase(fetchSceneCaptions.fulfilled, (state, action) => {
+        console.log("🟢 Captions received:", action.payload);
+        const { sceneId, captions } = action.payload;
+        const scene = state.scenes.find((s) => s.id === sceneId);
+        if (scene) scene.captions = captions;
       });
   },
 });
@@ -833,6 +892,8 @@ export const {
   addScene,
   removeScene,
   updateSceneText,
+  updateSceneCaptions,
+  setSceneCaptions,
   setSceneMedia,
   selectScene,
   reorderScenes,

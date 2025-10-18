@@ -6,11 +6,12 @@ import json
 import logging
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Optional
 
 from compositor import RenderCancelled, render_project
+from captions import generate_word_timestamps
 from storage import (
     fetch_job_metadata,
     fetch_project_index,
@@ -125,6 +126,32 @@ class RenderOrchestrator:
 
     # ------------------------------------------------------------------
 
+    def _process_scene(self, job_id: str, scene: Dict, voice_model: Optional[str]) -> Dict:
+        if self._is_cancelled(job_id):
+            return None
+        script_text = scene.get("script") or scene.get("text") or ""
+        audio_path, audio_duration = ensure_tts_audio(
+            script_text,
+            scene.get("ttsVoice") or voice_model,
+            self.audio_cache,
+        )
+        audio_path = Path(audio_path)
+        if audio_path.suffix.lower() != ".wav":
+            audio_path = audio_path.with_suffix(".wav")
+        updated_scene = {
+            **scene,
+            "audioPath": str(audio_path),
+            "audioDuration": round(audio_duration, 2),
+        }
+        # 🧠 Generate word-level timestamps using Whisper
+        try:
+            captions = generate_word_timestamps(audio_path, script_text)
+            updated_scene["captions"] = captions
+        except Exception as e:
+            self.logger.warning(f"⚠️ Caption generation failed for scene: {e}")
+            updated_scene["captions"] = []
+        return updated_scene
+
     def _run_render(self, job_id: str, project_payload: Dict) -> None:
         if self._is_cancelled(job_id):
             final_status = self._cancel_target(job_id)
@@ -141,28 +168,18 @@ class RenderOrchestrator:
             project_id = project_payload.get("id") or uuid.uuid4().hex
 
             prepared_scenes = []
-            for scene in scenes:
-                if self._is_cancelled(job_id):
-                    final_status = self._cancel_target(job_id)
-                    self._update(job_id, status=final_status)
-                    self._clear_cancel(job_id)
-                    return
-
-                script_text = scene.get("script") or scene.get("text") or ""
-                audio_path, audio_duration = ensure_tts_audio(
-                    script_text,
-                    scene.get("ttsVoice") or voice_model,
-                    self.audio_cache,
-                )
-                # Ensure audioPath points to a .wav file explicitly
-                audio_path = Path(audio_path)
-                if audio_path.suffix.lower() != ".wav":
-                    audio_path = audio_path.with_suffix(".wav")
-                prepared_scenes.append({
-                    **scene,
-                    "audioPath": str(audio_path),
-                    "audioDuration": round(audio_duration, 2),
-                })
+            max_workers = min(4, len(scenes)) if scenes else 1
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(self._process_scene, job_id, scene, voice_model): scene for scene in scenes}
+                for future in as_completed(futures):
+                    if self._is_cancelled(job_id):
+                        final_status = self._cancel_target(job_id)
+                        self._update(job_id, status=final_status)
+                        self._clear_cancel(job_id)
+                        return
+                    result = future.result()
+                    if result is not None:
+                        prepared_scenes.append(result)
 
             output_dir = self.render_dir / project_id
             cache_dir = self.video_cache
