@@ -37,7 +37,9 @@ export default function PreviewPanel() {
     if (renderState.status === "completed") {
       scenes.forEach((scene) => {
         const audioUrl = scene.audioUrl || (scene.audio && scene.audio.url);
-        if (audioUrl) {
+        const hasWordTiming = Array.isArray(scene.captions)
+          && scene.captions.some((cap) => typeof cap.start === "number" && typeof cap.end === "number");
+        if (audioUrl && !hasWordTiming) {
           dispatch(fetchSceneCaptions({ sceneId: scene.id, audioUrl, text: scene.text }));
         }
       });

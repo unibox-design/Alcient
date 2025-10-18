@@ -11,8 +11,7 @@ import {
 } from "../lib/renderApi";
 import { suggestClips } from "../lib/mediaApi";
 import { enrichScenesMetadata } from "../lib/sceneApi";
-// import { DEFAULT_CAPTION_TEMPLATE } from "../lib/captions";
-import { generateCaptions } from "../api"; // near the top with other imports
+import { DEFAULT_CAPTION_TEMPLATE, normaliseCaptionWords } from "../lib/captions";
 
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
@@ -67,6 +66,33 @@ const buildCaptionSegments = (text, durationSeconds) => {
     });
   }
   return segments;
+};
+
+const parseCaptionResponse = (payload) => {
+  if (!payload || typeof payload !== "object") return [];
+  const maybeWords =
+    payload.words ||
+    (payload.captions && (payload.captions.words || payload.captions)) ||
+    [];
+  return normaliseCaptionWords(maybeWords);
+};
+
+const requestSceneCaptions = async ({ sceneId, audioUrl, text }) => {
+  const res = await fetch(`${BASE}/api/captions/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sceneId, audioUrl, text }),
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    throw new Error(body?.error || "Failed to generate captions");
+  }
+  const captions = parseCaptionResponse(body);
+  return {
+    sceneId: body.sceneId || sceneId,
+    captions,
+    text: body.text || text || "",
+  };
 };
 
 const buildProjectPayload = (project) => ({
@@ -280,14 +306,7 @@ export const generateSceneCaptions = createAsyncThunk(
   "project/generateSceneCaptions",
   async ({ sceneId, audioUrl, text }, { rejectWithValue }) => {
     try {
-      const res = await fetch(`${BASE}/api/captions/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audioUrl, text }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || "Failed to generate captions");
-      return { sceneId, captions: body.words || body.captions || [] };
+      return await requestSceneCaptions({ sceneId, audioUrl, text });
     } catch (err) {
       return rejectWithValue({ error: err.message });
     }
@@ -298,8 +317,7 @@ export const fetchSceneCaptions = createAsyncThunk(
   "project/fetchSceneCaptions",
   async ({ sceneId, audioUrl, text }, { rejectWithValue }) => {
     try {
-      const data = await generateCaptions({ audioUrl, text });
-      return { sceneId, captions: data.words || data.captions || [] };
+      return await requestSceneCaptions({ sceneId, audioUrl, text });
     } catch (err) {
       return rejectWithValue({ error: err.message });
     }
@@ -393,12 +411,9 @@ const projectSlice = createSlice({
       state.narration = normalizeNarration(narration);
       state.keywords = keywords || [];
       state.voiceModel = voiceModel || state.voiceModel;
-      if (typeof captionsEnabled === "boolean") {
-        state.captionsEnabled = captionsEnabled;
-      }
-      if (captionTemplate) {
-        state.captionTemplate = captionTemplate;
-      }
+      state.captionsEnabled =
+        typeof captionsEnabled === "boolean" ? captionsEnabled : true;
+      state.captionTemplate = captionTemplate || DEFAULT_CAPTION_TEMPLATE;
       if (durationSeconds != null) {
         const parsed =
           typeof durationSeconds === "number"
@@ -430,7 +445,11 @@ const projectSlice = createSlice({
           visual: s.visual ?? s.description ?? null,
           keywords: s.keywords || [],
           imagePrompt: s.imagePrompt ?? null,
-          captions: buildCaptionSegments(textValue, s.audioDuration ?? null),
+          captions: normaliseCaptionWords(
+            s.captions && Array.isArray(s.captions)
+              ? s.captions
+              : buildCaptionSegments(textValue, s.audioDuration ?? null)
+          ),
           audioDuration: Math.round(audioEstimate * 100) / 100,
           duration:
             typeof s.duration === "number"
@@ -483,7 +502,7 @@ const projectSlice = createSlice({
         media: null,
         keywords: [],
         imagePrompt: null,
-        captions: buildCaptionSegments(text, estimated),
+        captions: normaliseCaptionWords(buildCaptionSegments(text, estimated)),
         visual: null,
         script: text,
         order,
@@ -510,7 +529,9 @@ const projectSlice = createSlice({
         const estimated = estimateSpeechDuration(text, scene.ttsVoice || state.voiceModel);
         scene.audioDuration = Math.round(estimated * 100) / 100;
         scene.duration = Math.max(3, Math.round(estimated));
-        scene.captions = buildCaptionSegments(text, scene.audioDuration);
+        scene.captions = normaliseCaptionWords(
+          buildCaptionSegments(text, scene.audioDuration)
+        );
         markDirty(state);
       }
     },
@@ -518,7 +539,7 @@ const projectSlice = createSlice({
       const { id, captions } = action.payload;
       const scene = state.scenes.find((s) => s.id === id);
       if (scene) {
-        scene.captions = Array.isArray(captions) ? captions : [];
+        scene.captions = normaliseCaptionWords(captions);
         markDirty(state);
       }
     },
@@ -526,7 +547,7 @@ const projectSlice = createSlice({
       const { sceneId, captions } = action.payload || {};
       const scene = state.scenes.find((s) => s.id === sceneId);
       if (scene) {
-        scene.captions = Array.isArray(captions) ? captions : [];
+        scene.captions = normaliseCaptionWords(captions);
       }
     },
     setSceneMedia(state, action) {
@@ -620,12 +641,9 @@ const projectSlice = createSlice({
           typeof project.durationSeconds === "number"
             ? project.durationSeconds
             : state.durationSeconds;
-        if (typeof project.captionsEnabled === "boolean") {
-          state.captionsEnabled = project.captionsEnabled;
-        }
-        if (project.captionTemplate) {
-          state.captionTemplate = project.captionTemplate;
-        }
+        state.captionsEnabled =
+          typeof project.captionsEnabled === "boolean" ? project.captionsEnabled : true;
+        state.captionTemplate = project.captionTemplate || DEFAULT_CAPTION_TEMPLATE;
         const scenes = project.scenes || [];
         state.scenes = scenes.map((scene, index) => ({
           id: scene.id ?? nanoid(),
@@ -649,9 +667,11 @@ const projectSlice = createSlice({
               typeof scene.duration === "number"
                 ? scene.duration
                 : Math.max(3, Math.round(audioEstimate)),
-            captions: Array.isArray(scene.captions)
-              ? scene.captions
-              : buildCaptionSegments(scene.script || scene.text, audioEstimate),
+            captions: normaliseCaptionWords(
+              Array.isArray(scene.captions)
+                ? scene.captions
+                : buildCaptionSegments(scene.script || scene.text, audioEstimate)
+            ),
           };
         });
         state.selectedSceneId = state.scenes[0]?.id ?? null;
@@ -876,13 +896,12 @@ const projectSlice = createSlice({
       .addCase(generateSceneCaptions.fulfilled, (state, action) => {
         const { sceneId, captions } = action.payload;
         const scene = state.scenes.find((s) => s.id === sceneId);
-        if (scene) scene.captions = captions;
+        if (scene) scene.captions = normaliseCaptionWords(captions);
       })
       .addCase(fetchSceneCaptions.fulfilled, (state, action) => {
-        console.log("🟢 Captions received:", action.payload);
         const { sceneId, captions } = action.payload;
         const scene = state.scenes.find((s) => s.id === sceneId);
-        if (scene) scene.captions = captions;
+        if (scene) scene.captions = normaliseCaptionWords(captions);
       });
   },
 });

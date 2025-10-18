@@ -716,6 +716,7 @@ def generate_captions():
     data = request.get_json(silent=True) or {}
     audio_url = data.get("audioUrl")
     text = data.get("text", "")
+    scene_id = data.get("sceneId")
 
     if not audio_url:
         return jsonify({"error": "Missing audioUrl"}), 400
@@ -732,11 +733,25 @@ def generate_captions():
 
     try:
         timestamps = generate_word_timestamps(tmp_path, text)
-        os.remove(tmp_path)
-        return jsonify({"captions": timestamps})
     except Exception as e:
         print("❌ Caption generation error:", e)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    payload = {
+        "sceneId": scene_id,
+        "text": timestamps.get("text", text or ""),
+        "words": timestamps.get("words", []),
+    }
+    # Keep backwards compatibility with older clients expecting the "captions" key
+    payload["captions"] = {
+        "text": payload["text"],
+        "words": payload["words"],
+    }
+
+    return jsonify(payload)
 
 
 @app.route('/videos/<project_id>/<path:filename>')
