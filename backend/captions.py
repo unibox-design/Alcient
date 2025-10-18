@@ -418,7 +418,7 @@ def generate_ass_subtitles(
     width, height = resolution if resolution else (1920, 1080)
     subs.info.update({"PlayResX": int(width), "PlayResY": int(height)})
 
-    style = pysubs2.SSAStyle(name=style_definition.style_name)
+    style = pysubs2.SSAStyle()
     style.fontname = style_definition.fontname
     style.fontsize = style_definition.fontsize
     style.borderstyle = style_definition.border_style
@@ -447,7 +447,7 @@ def generate_ass_subtitles(
     if back:
         style.backcolor = back
 
-    subs.styles[style.name] = style
+    subs.styles[style_definition.style_name] = style
 
     timeline_offset = 0.0
     event_count = 0
