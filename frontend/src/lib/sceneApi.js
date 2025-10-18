@@ -1,7 +1,3 @@
-import { generateCaptions } from "../api";
-import { store } from "../store/store";
-import { fetchSceneCaptions } from "../store/projectSlice";
-
 const BASE = import.meta.env.VITE_BACKEND || "http://localhost:5000";
 
 export async function enrichScenesMetadata({ format = "landscape", scenes = [] }) {
@@ -30,9 +26,6 @@ export async function generateSceneAudioAndCaptions({ sceneId, text, voiceModel 
     if (!ttsRes.ok) throw new Error(ttsBody.error || "TTS failed");
 
     const audioUrl = ttsBody.audioUrl || ttsBody.path;
-
-    // Step 2: Dispatch Redux caption fetch instead of direct API call
-    store.dispatch(fetchSceneCaptions({ sceneId, audioUrl, text }));
 
     return {
       audioUrl,

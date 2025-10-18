@@ -1,8 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { cancelRenderJob, fetchRenderStatus, pauseRenderJob, fetchSceneCaptions } from "../store/projectSlice";
-import CaptionOverlay from "./captions/CaptionOverlay";
-import { buildProjectCaptionTimeline } from "../lib/captions";
+import { cancelRenderJob, fetchRenderStatus, pauseRenderJob } from "../store/projectSlice";
 
 const ASPECT_CLASS = {
   landscape: "aspect-video",
@@ -18,12 +16,7 @@ export default function PreviewPanel() {
   const widthClass = format === "portrait" ? "w-1/2 max-w-[360px]" : "w-full";
   const renderState = useSelector((state) => state.project.render);
   const projectId = useSelector((state) => state.project.id);
-  const captionsEnabled = useSelector((state) => state.project.captionsEnabled);
-  const captionTemplate = useSelector((state) => state.project.captionTemplate);
-  const scenes = useSelector((state) => state.project.scenes);
-  const captionTimeline = useMemo(() => buildProjectCaptionTimeline(scenes), [scenes]);
   const videoRef = useRef(null);
-  const [currentTime, setCurrentTime] = useState(0);
 
   useEffect(() => {
     if (POLLING_STATUSES.includes(renderState.status) && renderState.jobId) {
@@ -34,18 +27,8 @@ export default function PreviewPanel() {
       }, 2000);
       return () => clearInterval(interval);
     }
-    if (renderState.status === "completed") {
-      scenes.forEach((scene) => {
-        const audioUrl = scene.audioUrl || (scene.audio && scene.audio.url);
-        const hasWordTiming = Array.isArray(scene.captions)
-          && scene.captions.some((cap) => typeof cap.start === "number" && typeof cap.end === "number");
-        if (audioUrl && !hasWordTiming) {
-          dispatch(fetchSceneCaptions({ sceneId: scene.id, audioUrl, text: scene.text }));
-        }
-      });
-    }
     return undefined;
-  }, [dispatch, projectId, renderState.jobId, renderState.status, scenes]);
+  }, [dispatch, projectId, renderState.jobId, renderState.status]);
 
   const statusText = () => {
     switch (renderState.status) {
@@ -91,18 +74,6 @@ export default function PreviewPanel() {
     dispatch(pauseRenderJob());
   };
 
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime || 0);
-    }
-  };
-
-  useEffect(() => {
-    if (renderState.status !== "completed") {
-      setCurrentTime(0);
-    }
-  }, [renderState.status, renderState.videoUrl]);
-
   return (
     <div className="flex flex-col items-center justify-center h-full p-6">
       <style>
@@ -123,17 +94,10 @@ export default function PreviewPanel() {
             ref={videoRef}
             controls
             className="absolute inset-0 h-full w-full rounded-lg shadow-lg bg-black"
-            onTimeUpdate={handleTimeUpdate}
           >
             <source src={renderState.videoUrl} type="video/mp4" />
             Your browser does not support the video tag.
           </video>
-          <CaptionOverlay
-            enabled={captionsEnabled}
-            segments={captionTimeline}
-            templateId={captionTemplate}
-            currentTime={currentTime}
-          />
         </div>
       ) : (
         <div

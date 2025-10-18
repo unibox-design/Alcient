@@ -8,7 +8,6 @@ import {
   initProject,
   setDurationSeconds,
   setVoiceModel,
-  toggleCaptions,
 } from "../store/projectSlice";
 import { estimateSpeechDuration } from "../lib/speech";
 
@@ -30,7 +29,6 @@ export default function SmartSidebar({ active }) {
   const promptFromState = useSelector((state) => state.project.prompt);
   const voiceModel = useSelector((state) => state.project.voiceModel);
   const durationSeconds = useSelector((state) => state.project.durationSeconds);
-  const captionsEnabled = useSelector((state) => state.project.captionsEnabled);
   const [prompt, setPrompt] = useState(promptFromState || "");
   const [mode, setMode] = useState("generate"); // generate | manual
   const [selectedFormat, setSelectedFormat] = useState(format);
@@ -271,30 +269,6 @@ export default function SmartSidebar({ active }) {
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
-            <div>
-              <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
-                Captions
-              </p>
-              <p className="text-[11px] text-gray-500">
-                Auto-generate captions and apply template styling.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => dispatch(toggleCaptions(!captionsEnabled))}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
-                captionsEnabled ? "bg-indigo-500" : "bg-gray-300"
-              }`}
-            >
-              <span
-                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
-                  captionsEnabled ? "translate-x-5" : "translate-x-1"
-                }`}
-              />
-            </button>
           </div>
 
           <div className="flex items-center gap-3">

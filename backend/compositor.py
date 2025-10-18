@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Callable, Dict, List, Optional
 
 import requests
 
-from captions import export_captions_to_srt
+from captions import export_captions_to_ass
 
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
@@ -167,10 +168,8 @@ def _build_scene_video(
 
 
 def _burn_subtitles(video_path: Path, subtitle_path: Path, output_path: Path) -> None:
-    filter_arg = (
-        f"subtitles={subtitle_path.as_posix()}:"
-        "force_style=Fontsize=28,PrimaryColour=&H00FFFFFF"
-    )
+    quoted_path = shlex.quote(subtitle_path.as_posix())
+    filter_arg = f"subtitles={quoted_path}"
     run_ffmpeg(
         [
             "-y",
@@ -224,8 +223,14 @@ def render_project(
             caption_dest = dest
             captions_payload = scene.get("captions")
             if captions_payload:
-                subtitle_file = export_captions_to_srt(
-                    captions_payload, temp_dir / f"{dest.stem}.srt"
+                scene_identifier = scene.get("id") or f"{idx:03d}"
+                safe_identifier = "".join(
+                    c if str(c).isalnum() else "_" for c in str(scene_identifier)
+                ).strip("_")
+                if not safe_identifier:
+                    safe_identifier = f"{idx:03d}"
+                subtitle_file = export_captions_to_ass(
+                    captions_payload, temp_dir / f"scene_{safe_identifier}.ass"
                 )
                 if subtitle_file and subtitle_file.exists():
                     captioned_path = dest.with_name(f"{dest.stem}_subs{dest.suffix}")

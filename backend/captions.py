@@ -9,6 +9,7 @@ from typing import Iterable, List, Optional
 
 import openai
 from dotenv import load_dotenv
+import pysubs2
 
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -160,101 +161,54 @@ def _normalise_caption_payload(captions) -> List[CaptionWord]:
     return words
 
 
-def _format_srt_timestamp(seconds: float) -> str:
-    total_millis = int(round(max(seconds, 0.0) * 1000))
-    hours, remainder = divmod(total_millis, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    secs, millis = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
-
-
-def _chunk_caption_words(words: List[CaptionWord]) -> List[dict]:
-    if not words:
-        return []
-
-    segments: List[dict] = []
-    buffer: List[str] = []
-    segment_start: Optional[float] = None
-    segment_end: Optional[float] = None
-
-    def flush_segment() -> None:
-        nonlocal buffer, segment_start, segment_end
-        if buffer and segment_start is not None and segment_end is not None:
-            text = " ".join(buffer).strip()
-            if text:
-                segments.append({
-                    "text": text,
-                    "start": segment_start,
-                    "end": segment_end,
-                })
-        buffer = []
-        segment_start = None
-        segment_end = None
-
-    MAX_WORDS = 8
-    MAX_DURATION = 4.5
-    MAX_GAP = 0.8
-
-    for word in words:
-        cleaned = word.text.strip()
-        if not cleaned:
-            continue
-
-        if buffer:
-            current_start = segment_start if segment_start is not None else word.start
-            current_end = segment_end if segment_end is not None else current_start
-            gap = word.start - current_end
-            duration = current_end - current_start
-            if (
-                gap > MAX_GAP
-                or len(buffer) >= MAX_WORDS
-                or duration >= MAX_DURATION
-                or buffer[-1].endswith((".", "?", "!"))
-            ):
-                flush_segment()
-
-        if not buffer:
-            segment_start = word.start
-
-        buffer.append(cleaned)
-        segment_end = max(segment_end or word.end, word.end)
-
-        if cleaned.endswith((".", "?", "!")) and segment_start is not None:
-            flush_segment()
-
-    if buffer:
-        flush_segment()
-
-    return segments
-
-
-def export_captions_to_srt(captions, output_path: Path) -> Optional[Path]:
-    """Write captions to an SRT file suitable for ffmpeg subtitle burn-in."""
+def export_captions_to_ass(captions, output_path: Path) -> Optional[Path]:
+    """Write captions to an ASS subtitle file with word-level timing."""
 
     words = _normalise_caption_payload(captions)
     if not words:
         return None
 
-    segments = _chunk_caption_words(words)
-    if not segments:
-        return None
-
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with output_path.open("w", encoding="utf-8") as handle:
-        for index, segment in enumerate(segments, start=1):
-            start = float(segment.get("start", 0.0))
-            end = float(segment.get("end", start + 0.5))
-            if end <= start:
-                end = start + 0.5
-            text = (segment.get("text") or "").strip()
-            if not text:
-                continue
-            handle.write(f"{index}\n")
-            handle.write(
-                f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n"
-            )
-            handle.write(f"{text}\n\n")
+    subs = pysubs2.SSAFile()
+    subs.info.update({"PlayResX": 1920, "PlayResY": 1080})
 
+    style = subs.styles.get("Default")
+    if style is None:
+        style = pysubs2.SSAStyle(name="Default")
+        subs.styles["Default"] = style
+
+    style.fontname = "Inter"
+    style.fontsize = 48
+    style.alignment = pysubs2.Alignment.BOTTOM_CENTER
+    style.primarycolor = pysubs2.Color(255, 255, 255, 0)
+    style.backcolor = pysubs2.Color(0, 0, 0, 180)
+    style.marginl = 60
+    style.marginr = 60
+    style.marginv = 80
+    style.shadow = 1
+    style.outline = 1
+
+    for word in words:
+        text = word.text.strip()
+        if not text:
+            continue
+        start_ms = max(0, int(round(word.start * 1000)))
+        end_ms = int(round(word.end * 1000))
+        if end_ms <= start_ms:
+            end_ms = start_ms + 1
+        subs.events.append(
+            pysubs2.SSAEvent(
+                start=start_ms,
+                end=end_ms,
+                text=text,
+                style="Default",
+            )
+        )
+
+    if not subs.events:
+        return None
+
+    subs.save(str(output_path))
     return output_path

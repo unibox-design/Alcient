@@ -7,3 +7,4 @@ boto3
 SQLAlchemy
 stripe
 google-genai
+pysubs2
