@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import subprocess
 import tempfile
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import requests
+
+from captions import export_captions_to_srt
 
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
@@ -24,6 +27,9 @@ class RenderError(RuntimeError):
 
 class RenderCancelled(RuntimeError):
     """Raised when rendering is cancelled mid-process."""
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_ffmpeg(args: List[str]) -> None:
@@ -160,6 +166,25 @@ def _build_scene_video(
         run_ffmpeg(args)
 
 
+def _burn_subtitles(video_path: Path, subtitle_path: Path, output_path: Path) -> None:
+    filter_arg = (
+        f"subtitles={subtitle_path.as_posix()}:"
+        "force_style=Fontsize=28,PrimaryColour=&H00FFFFFF"
+    )
+    run_ffmpeg(
+        [
+            "-y",
+            "-i",
+            str(video_path),
+            "-vf",
+            filter_arg,
+            "-c:a",
+            "copy",
+            str(output_path),
+        ]
+    )
+
+
 def render_project(
     project_id: str,
     scenes: List[Dict],
@@ -195,7 +220,35 @@ def render_project(
 
             dest = temp_dir / f"scene_{idx:03d}.mp4"
             _build_scene_video(media_path, audio_path, duration, orientation, dest)
-            scene_paths.append(dest)
+
+            caption_dest = dest
+            captions_payload = scene.get("captions")
+            if captions_payload:
+                subtitle_file = export_captions_to_srt(
+                    captions_payload, temp_dir / f"{dest.stem}.srt"
+                )
+                if subtitle_file and subtitle_file.exists():
+                    captioned_path = dest.with_name(f"{dest.stem}_subs{dest.suffix}")
+                    try:
+                        _burn_subtitles(dest, subtitle_file, captioned_path)
+                        caption_dest = captioned_path
+                        logger.info(
+                            "Generated captions for Scene %s → %s",
+                            scene.get("id") or idx,
+                            subtitle_file,
+                        )
+                    except RenderError as exc:
+                        logger.warning(
+                            "Caption burn-in failed for Scene %s: %s",
+                            scene.get("id") or idx,
+                            exc,
+                        )
+                else:
+                    logger.debug(
+                        "No caption data available for Scene %s", scene.get("id") or idx
+                    )
+
+            scene_paths.append(caption_dest)
             if cancel_checker and cancel_checker():
                 raise RenderCancelled("Render cancelled during scene assembly")
 
@@ -209,43 +262,24 @@ def render_project(
 
         final_path = output_dir / f"{project_id}_final.mp4"
 
-        ffmpeg_args = ["-y"]
-        filter_inputs = []
-        for idx, path in enumerate(scene_paths):
-            ffmpeg_args.extend(["-i", str(path)])
-            filter_inputs.append(f"[{idx}:v:0][{idx}:a:0]")
-
-        filter_complex = "".join(filter_inputs) + f"concat=n={len(scene_paths)}:v=1:a=1[v][a]"
-
-        ffmpeg_args.extend([
-            "-filter_complex",
-            filter_complex,
-            "-map",
-            "[v]",
-            "-map",
-            "[a]",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-ar",
-            "24000",
-            "-ac",
-            "1",
-            "-movflags",
-            "+faststart",
-            str(final_path),
-        ])
-
         if cancel_checker and cancel_checker():
             raise RenderCancelled("Render cancelled before final assembly")
-        run_ffmpeg(ffmpeg_args)
+        run_ffmpeg(
+            [
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(list_file),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(final_path),
+            ]
+        )
 
         return final_path
     finally:

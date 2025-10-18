@@ -1,10 +1,11 @@
-"""Utilities for generating per-word caption timestamps."""
+"""Utilities for generating per-word caption timestamps and subtitle files."""
 from __future__ import annotations
 
 import json
 import os
 from dataclasses import dataclass
-from typing import List
+from pathlib import Path
+from typing import Iterable, List, Optional
 
 import openai
 from dotenv import load_dotenv
@@ -120,3 +121,140 @@ def generate_word_timestamps(audio_path: str, text: str):
         "text": recognised_text,
         "words": [word.as_dict() for word in words],
     }
+
+
+def _normalise_caption_payload(captions) -> List[CaptionWord]:
+    words: List[CaptionWord] = []
+    if not captions:
+        return words
+
+    payload: Iterable
+    if isinstance(captions, dict):
+        payload = captions.get("words") or []
+    elif isinstance(captions, list):
+        payload = captions
+    else:
+        payload = []
+
+    previous_end: Optional[float] = None
+    for raw in payload:
+        if isinstance(raw, CaptionWord):
+            word = raw
+        elif isinstance(raw, dict):
+            token = (raw.get("text") or raw.get("word") or raw.get("token") or "").strip()
+            if not token:
+                continue
+            start = _coerce_time(raw.get("start"))
+            if start is None:
+                start = previous_end if previous_end is not None else 0.0
+            end = _coerce_time(raw.get("end"), start + 0.4)
+            if end is None or end <= start:
+                end = start + 0.4
+            word = CaptionWord(text=token, start=start, end=end)
+        else:
+            continue
+        previous_end = word.end
+        words.append(word)
+
+    words.sort(key=lambda w: w.start)
+    return words
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    total_millis = int(round(max(seconds, 0.0) * 1000))
+    hours, remainder = divmod(total_millis, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _chunk_caption_words(words: List[CaptionWord]) -> List[dict]:
+    if not words:
+        return []
+
+    segments: List[dict] = []
+    buffer: List[str] = []
+    segment_start: Optional[float] = None
+    segment_end: Optional[float] = None
+
+    def flush_segment() -> None:
+        nonlocal buffer, segment_start, segment_end
+        if buffer and segment_start is not None and segment_end is not None:
+            text = " ".join(buffer).strip()
+            if text:
+                segments.append({
+                    "text": text,
+                    "start": segment_start,
+                    "end": segment_end,
+                })
+        buffer = []
+        segment_start = None
+        segment_end = None
+
+    MAX_WORDS = 8
+    MAX_DURATION = 4.5
+    MAX_GAP = 0.8
+
+    for word in words:
+        cleaned = word.text.strip()
+        if not cleaned:
+            continue
+
+        if buffer:
+            current_start = segment_start if segment_start is not None else word.start
+            current_end = segment_end if segment_end is not None else current_start
+            gap = word.start - current_end
+            duration = current_end - current_start
+            if (
+                gap > MAX_GAP
+                or len(buffer) >= MAX_WORDS
+                or duration >= MAX_DURATION
+                or buffer[-1].endswith((".", "?", "!"))
+            ):
+                flush_segment()
+
+        if not buffer:
+            segment_start = word.start
+
+        buffer.append(cleaned)
+        segment_end = max(segment_end or word.end, word.end)
+
+        if cleaned.endswith((".", "?", "!")) and segment_start is not None:
+            flush_segment()
+
+    if buffer:
+        flush_segment()
+
+    return segments
+
+
+def export_captions_to_srt(captions, output_path: Path) -> Optional[Path]:
+    """Write captions to an SRT file suitable for ffmpeg subtitle burn-in."""
+
+    words = _normalise_caption_payload(captions)
+    if not words:
+        return None
+
+    segments = _chunk_caption_words(words)
+    if not segments:
+        return None
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8") as handle:
+        for index, segment in enumerate(segments, start=1):
+            start = float(segment.get("start", 0.0))
+            end = float(segment.get("end", start + 0.5))
+            if end <= start:
+                end = start + 0.5
+            text = (segment.get("text") or "").strip()
+            if not text:
+                continue
+            handle.write(f"{index}\n")
+            handle.write(
+                f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}\n"
+            )
+            handle.write(f"{text}\n\n")
+
+    return output_path

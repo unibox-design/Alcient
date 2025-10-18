@@ -170,7 +170,10 @@ class RenderOrchestrator:
             prepared_scenes = []
             max_workers = min(4, len(scenes)) if scenes else 1
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(self._process_scene, job_id, scene, voice_model): scene for scene in scenes}
+                futures = {}
+                for idx, scene in enumerate(scenes):
+                    scene_payload = {**scene, "_original_index": idx}
+                    futures[executor.submit(self._process_scene, job_id, scene_payload, voice_model)] = scene_payload
                 for future in as_completed(futures):
                     if self._is_cancelled(job_id):
                         final_status = self._cancel_target(job_id)
@@ -180,6 +183,27 @@ class RenderOrchestrator:
                     result = future.result()
                     if result is not None:
                         prepared_scenes.append(result)
+
+            def _scene_sort_key(item: Dict) -> tuple:
+                order_value = item.get("order")
+                numeric_order = None
+                if isinstance(order_value, (int, float)):
+                    numeric_order = float(order_value)
+                else:
+                    try:
+                        numeric_order = float(order_value)
+                    except (TypeError, ValueError):
+                        numeric_order = None
+                fallback_index = item.get("_original_index", 0)
+                key_value = numeric_order if numeric_order is not None else fallback_index
+                return (key_value, fallback_index)
+
+            prepared_scenes = sorted(prepared_scenes, key=_scene_sort_key)
+            scene_order_log = [
+                item.get("order") if item.get("order") is not None else item.get("_original_index")
+                for item in prepared_scenes
+            ]
+            self.logger.info("🧩 Scene order before merge: %s", scene_order_log)
 
             output_dir = self.render_dir / project_id
             cache_dir = self.video_cache
