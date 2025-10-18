@@ -38,6 +38,7 @@ const markDirty = (state) => {
   }
 };
 
+
 const buildProjectPayload = (project) => ({
   id: project.id,
   title: project.title,
@@ -57,6 +58,8 @@ const buildProjectPayload = (project) => ({
     audioDuration: scene.audioDuration,
   })),
 });
+
+export const generateProjectFromPrompt = createAsyncThunk(
   "project/generateFromPrompt",
   async ({ prompt, format, projectId, voiceModel, durationSeconds }, { rejectWithValue }) => {
     try {
