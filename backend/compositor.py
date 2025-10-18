@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,7 +12,7 @@ from typing import Callable, Dict, List, Optional
 
 import requests
 
-from captions import export_captions_to_ass
+from captions import DEFAULT_CAPTION_STYLE, generate_ass_subtitles
 
 TARGET_RESOLUTIONS = {
     "portrait": (1080, 1920),
@@ -167,9 +166,16 @@ def _build_scene_video(
         run_ffmpeg(args)
 
 
+def _escape_subtitle_path(path: Path) -> str:
+    escaped = path.as_posix().replace("\\", "\\\\")
+    escaped = escaped.replace(":", "\\:")
+    escaped = escaped.replace("'", r"\'")
+    escaped = escaped.replace(",", "\\,")
+    return escaped
+
+
 def _burn_subtitles(video_path: Path, subtitle_path: Path, output_path: Path) -> None:
-    quoted_path = shlex.quote(subtitle_path.as_posix())
-    filter_arg = f"subtitles={quoted_path}"
+    filter_arg = f"subtitles='{_escape_subtitle_path(subtitle_path)}'"
     run_ffmpeg(
         [
             "-y",
@@ -177,8 +183,18 @@ def _burn_subtitles(video_path: Path, subtitle_path: Path, output_path: Path) ->
             str(video_path),
             "-vf",
             filter_arg,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "copy",
+            "-movflags",
+            "+faststart",
             str(output_path),
         ]
     )
@@ -191,6 +207,7 @@ def render_project(
     output_dir: Path,
     cache_dir: Path,
     cancel_checker: Optional[Callable[[], bool]] = None,
+    caption_style: Optional[str] = None,
 ) -> Path:
     """Render the final video by normalising scenes then concatenating."""
 
@@ -200,11 +217,19 @@ def render_project(
     temp_dir = Path(tempfile.mkdtemp(prefix=f"render_{project_id}_", dir=output_dir))
 
     scene_paths: List[Path] = []
+    timeline_scenes: List[Dict] = []
+    target_resolution = TARGET_RESOLUTIONS.get(orientation, TARGET_RESOLUTIONS["landscape"])
+    selected_style = caption_style or DEFAULT_CAPTION_STYLE
     try:
         for idx, scene in enumerate(scenes):
             if cancel_checker and cancel_checker():
                 raise RenderCancelled("Render cancelled before processing scene")
-            duration = float(scene.get("audioDuration") or scene.get("duration") or 3.0)
+            duration_value = scene.get("audioDuration") or scene.get("duration") or 3.0
+            try:
+                duration = float(duration_value)
+            except (TypeError, ValueError):
+                duration = 3.0
+            duration = max(duration, 0.1)
             audio_path = Path(scene.get("audioPath"))
             if not audio_path.exists():
                 raise RenderError(f"Audio track missing for scene {scene.get('id')}")
@@ -220,52 +245,37 @@ def render_project(
             dest = temp_dir / f"scene_{idx:03d}.mp4"
             _build_scene_video(media_path, audio_path, duration, orientation, dest)
 
-            caption_dest = dest
-            captions_payload = scene.get("captions")
-            if captions_payload:
-                scene_identifier = scene.get("id") or f"{idx:03d}"
-                safe_identifier = "".join(
-                    c if str(c).isalnum() else "_" for c in str(scene_identifier)
-                ).strip("_")
-                if not safe_identifier:
-                    safe_identifier = f"{idx:03d}"
-                subtitle_file = export_captions_to_ass(
-                    captions_payload, temp_dir / f"scene_{safe_identifier}.ass"
-                )
-                if subtitle_file and subtitle_file.exists():
-                    captioned_path = dest.with_name(f"{dest.stem}_subs{dest.suffix}")
-                    try:
-                        _burn_subtitles(dest, subtitle_file, captioned_path)
-                        caption_dest = captioned_path
-                        logger.info(
-                            "Generated captions for Scene %s → %s",
-                            scene.get("id") or idx,
-                            subtitle_file,
-                        )
-                    except RenderError as exc:
-                        logger.warning(
-                            "Caption burn-in failed for Scene %s: %s",
-                            scene.get("id") or idx,
-                            exc,
-                        )
-                else:
-                    logger.debug(
-                        "No caption data available for Scene %s", scene.get("id") or idx
-                    )
-
-            scene_paths.append(caption_dest)
+            scene_paths.append(dest)
+            timeline_scenes.append(
+                {
+                    "id": scene.get("id"),
+                    "order": scene.get("order"),
+                    "captions": scene.get("captions"),
+                    "script": scene.get("script"),
+                    "text": scene.get("text"),
+                    "audioDuration": round(duration, 3),
+                    "duration": round(duration, 3),
+                }
+            )
             if cancel_checker and cancel_checker():
                 raise RenderCancelled("Render cancelled during scene assembly")
 
         if not scene_paths:
             raise RenderError("No scene clips were generated")
 
+        subtitle_file = generate_ass_subtitles(
+            project_id,
+            timeline_scenes,
+            selected_style,
+            resolution=target_resolution,
+        )
+
         list_file = temp_dir / "concat.txt"
         with list_file.open("w", encoding="utf-8") as fh:
             for path in scene_paths:
                 fh.write(f"file '{path.as_posix()}'\n")
 
-        final_path = output_dir / f"{project_id}_final.mp4"
+        concat_path = temp_dir / f"{project_id}_concat.mp4"
 
         if cancel_checker and cancel_checker():
             raise RenderCancelled("Render cancelled before final assembly")
@@ -282,9 +292,28 @@ def render_project(
                 "copy",
                 "-movflags",
                 "+faststart",
-                str(final_path),
+                str(concat_path),
             ]
         )
+
+        if cancel_checker and cancel_checker():
+            raise RenderCancelled("Render cancelled before subtitle burn-in")
+
+        final_path = output_dir / f"{project_id}_final.mp4"
+        if subtitle_file and subtitle_file.exists() and subtitle_file.stat().st_size > 0:
+            logger.info(
+                "Burning subtitles for project %s using style %s", project_id, selected_style
+            )
+            logger.debug("Subtitle source: %s", subtitle_file)
+            _burn_subtitles(concat_path, subtitle_file, final_path)
+        else:
+            if subtitle_file and subtitle_file.exists() and subtitle_file.stat().st_size == 0:
+                logger.warning("Subtitle file %s was empty; skipping burn-in", subtitle_file)
+            elif subtitle_file is None:
+                logger.info("No subtitles generated for project %s", project_id)
+            if final_path.exists():
+                final_path.unlink()
+            concat_path.replace(final_path)
 
         return final_path
     finally:

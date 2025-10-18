@@ -47,6 +47,7 @@ const buildProjectPayload = (project) => ({
   narration: project.narration,
   durationSeconds: project.durationSeconds,
   runtimeSeconds: project.runtimeSeconds,
+  captionStyle: project.captionStyle,
   scenes: project.scenes.map((scene) => ({
     id: scene.id,
     text: scene.text,
@@ -268,6 +269,7 @@ const createInitialState = () => ({
   prompt: "",
   narration: "",
   keywords: [],
+  captionStyle: "Classic Clean",
   scenes: [],
   selectedSceneId: null,
   status: "idle",
@@ -325,6 +327,19 @@ const projectSlice = createSlice({
       state.narration = normalizeNarration(narration);
       state.keywords = keywords || [];
       state.voiceModel = voiceModel || state.voiceModel;
+      const captionsMetadata =
+        action.payload?.metadata && typeof action.payload.metadata === "object"
+          ? action.payload.metadata.captions
+          : null;
+      const incomingStyle =
+        typeof action.payload?.captionStyle === "string"
+          ? action.payload.captionStyle.trim()
+          : "";
+      const fallbackStyle =
+        captionsMetadata && typeof captionsMetadata === "object"
+          ? (captionsMetadata.style || captionsMetadata.template || "").trim()
+          : "";
+      state.captionStyle = incomingStyle || fallbackStyle || "Classic Clean";
       if (durationSeconds != null) {
         const parsed =
           typeof durationSeconds === "number"
@@ -389,6 +404,16 @@ const projectSlice = createSlice({
         tokenBalance: state.tokenBalance,
         updatedAt: null,
       };
+    },
+    setCaptionStyle(state, action) {
+      const nextStyle =
+        typeof action.payload === "string" && action.payload.trim()
+          ? action.payload.trim()
+          : state.captionStyle;
+      if (nextStyle !== state.captionStyle) {
+        state.captionStyle = nextStyle;
+        markDirty(state);
+      }
     },
     addScene(state, action) {
       const { text = "New scene", duration } = action.payload || {};
@@ -508,6 +533,17 @@ const projectSlice = createSlice({
         state.narration = normalizeNarration(project.narration || "");
         state.keywords = project.keywords || [];
         state.voiceModel = project.voiceModel || state.voiceModel;
+        const generatedCaptionsMeta =
+          project.metadata && typeof project.metadata === "object"
+            ? project.metadata.captions
+            : null;
+        const generatedStyle =
+          typeof project.captionStyle === "string" && project.captionStyle.trim()
+            ? project.captionStyle.trim()
+            : generatedCaptionsMeta && typeof generatedCaptionsMeta === "object"
+              ? (generatedCaptionsMeta.style || generatedCaptionsMeta.template || "").trim()
+              : "";
+        state.captionStyle = generatedStyle || "Classic Clean";
         if (typeof project.runtimeSeconds === "number") {
           state.runtimeSeconds = project.runtimeSeconds;
         } else {
@@ -766,6 +802,7 @@ const projectSlice = createSlice({
 
 export const {
   initProject,
+  setCaptionStyle,
   addScene,
   removeScene,
   updateSceneText,

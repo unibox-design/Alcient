@@ -166,6 +166,14 @@ class RenderOrchestrator:
             orientation = project_payload.get("format", "landscape")
             voice_model = project_payload.get("voiceModel")
             project_id = project_payload.get("id") or uuid.uuid4().hex
+            caption_style = project_payload.get("captionStyle")
+            if not caption_style:
+                metadata = project_payload.get("metadata")
+                captions_meta = None
+                if isinstance(metadata, dict):
+                    captions_meta = metadata.get("captions")
+                if isinstance(captions_meta, dict):
+                    caption_style = captions_meta.get("style") or captions_meta.get("template")
 
             prepared_scenes = []
             max_workers = min(4, len(scenes)) if scenes else 1
@@ -222,6 +230,7 @@ class RenderOrchestrator:
                     output_dir=output_dir,
                     cache_dir=cache_dir,
                     cancel_checker=lambda: self._is_cancelled(job_id),
+                    caption_style=caption_style,
                 )
             except RenderCancelled:
                 final_status = self._cancel_target(job_id)

@@ -278,10 +278,12 @@ def save_project(
         if not isinstance(metadata.get("flags"), dict):
             metadata["flags"] = {}
         metadata["flags"]["captionsEnabled"] = bool(project_payload.get("captionsEnabled"))
-    if project_payload.get("captionTemplate"):
+    caption_style_value = project_payload.get("captionStyle") or project_payload.get("captionTemplate")
+    if caption_style_value:
         if not isinstance(metadata.get("captions"), dict):
             metadata["captions"] = {}
-        metadata["captions"]["template"] = project_payload.get("captionTemplate")
+        metadata["captions"]["style"] = caption_style_value
+        metadata["captions"]["template"] = caption_style_value
     project.project_metadata = metadata
 
     scenes_payload = project_payload.get("scenes") if isinstance(project_payload.get("scenes"), list) else []
@@ -327,6 +329,18 @@ def get_project(session, *, user: User, project_id: str) -> Optional[Project]:
 
 
 def serialize_project(project: Project) -> Dict[str, Any]:
+    metadata_raw = project.project_metadata
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    captions_meta = metadata.get("captions") if isinstance(metadata, dict) else None
+    if not isinstance(captions_meta, dict):
+        captions_meta = {}
+    caption_style = (
+        captions_meta.get("style")
+        or captions_meta.get("template")
+        or captions_meta.get("preset")
+        or None
+    )
+
     return {
         "id": project.id,
         "title": project.title,
@@ -337,7 +351,8 @@ def serialize_project(project: Project) -> Dict[str, Any]:
         "runtimeSeconds": project.runtime_seconds,
         "narration": project.narration,
         "keywords": project.keywords or [],
-        "metadata": project.project_metadata or {},
+        "metadata": metadata,
+        "captionStyle": caption_style,
         "scenes": [
             {
                 "id": scene.id,

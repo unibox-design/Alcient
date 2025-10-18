@@ -12,6 +12,7 @@ import {
   estimateProjectCost,
 } from "../store/projectSlice";
 import ReplaceClipModal from "./ReplaceClipModal";
+import CaptionTemplatePicker from "./CaptionTemplatePicker";
 
 export default function MainEditor({ active }) {
   const dispatch = useDispatch();
@@ -260,6 +261,7 @@ export default function MainEditor({ active }) {
                 {mediaSuggest.error}
               </p>
             )}
+            <CaptionTemplatePicker className="mt-4" />
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">

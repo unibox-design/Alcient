@@ -7,4 +7,6 @@ boto3
 SQLAlchemy
 stripe
 google-genai
-pysubs2
+pysubs2>=1.7.0
+ffmpeg-python>=0.2.0
+whisper-timestamped
